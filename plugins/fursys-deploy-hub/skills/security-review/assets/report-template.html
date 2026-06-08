@@ -1,0 +1,392 @@
+<!--
+  배포 전 검토 리포트 — 슬림 템플릿 (fursys-deploy-hub / security-review)
+
+  ★ 사용 규칙 (중요) ★
+  - 이 템플릿의 {{PLACEHOLDER}} 만 값/해석으로 채운다. CSS와 구조는 절대 바꾸지 않는다.
+    (CSS·레이아웃을 매번 재생성하지 않으므로 토큰을 크게 절감한다.)
+  - handover / Part2 / board / 검토요청자 / 역할분담 섹션은 이 템플릿에 없다 — 추가하지 말 것.
+  - 반복 영역(문제 행·프롬프트 카드·설정값 행)은 아래 1개 예시 + 주석을 보고 항목마다 복제해 채운다.
+  - 화면 문구는 쉬운 우리말. 심각도는 "치명/높음/중간/낮음".
+
+  CSS·색·폰트·카드·배지·표 비주얼은 사내 coolify-review 표준 템플릿에서 가져왔다(Stripe 톤 + Pretendard).
+
+  Placeholder 목록:
+    {{META_PATH}}              헤더 메타 (대상 폴더·저장소·종류·검사 일시) — <div> 묶음
+    {{SECURITY_BADGE}}         보안 결과 배지 (통과 초록/주의 주황/차단 빨강)
+    {{DEPLOY_BADGE}}           배포 준비 배지 (완료 초록/불가 빨강)
+    {{FINAL_LINE}}             최종 한 줄 (✅ 배포 가능 / ❌ 배포 불가 - 사유)
+    {{SUMMARY_CARDS}}          치명·높음·중간·낮음 카운트 카드 4개
+    {{SECURITY_FINDINGS_ROWS}} 보안 문제 표 행(tr) 반복 (+ git 이력 노출 경고행)
+    {{SECURITY_PROMPTS}}       치명/높음 복붙 수정 프롬프트 카드 반복
+    {{DEPLOY_CHECK_ROWS}}      배포 준비 체크 결과 표 행(tr) 반복
+    {{DEPLOY_PROMPTS}}         배포 준비 문제 시 복붙 프롬프트 카드 반복
+    {{ENV_ROWS}}               설정값 정리표 행(tr) 반복
+-->
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>배포 전 검토 결과</title>
+<link rel="preconnect" href="https://cdn.jsdelivr.net" crossorigin>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/variable/pretendardvariable-dynamic-subset.min.css">
+<style>
+  :root {
+    --primary: #533afd;
+    --primary-deep: #4434d4;
+    --ruby: #ea2261;
+    --lemon: #d97a1d;
+    --lemon-soft: #f7e8d4;
+    --green: #2cb67d;
+    --brand-dark-900: #1c1e54;
+
+    --canvas: #ffffff;
+    --canvas-soft: #f6f9fc;
+    --canvas-cream: rgba(252, 224, 208, 0.5);
+    --hairline: #e3e8ee;
+
+    --ink: #0d253d;
+    --ink-secondary: #273951;
+    --ink-mute: #64748d;
+    --on-primary: #ffffff;
+
+    --shadow-1: 0 1px 3px rgba(0, 55, 112, 0.08);
+    --shadow-2: 0 8px 24px rgba(0, 55, 112, 0.08), 0 2px 6px rgba(0, 55, 112, 0.04);
+    --code-bg: #000000;
+
+    --sev-critical-bg: rgba(234, 34, 97, 0.10);
+    --sev-critical-fg: var(--ruby);
+    --sev-high-bg:     var(--lemon-soft);
+    --sev-high-fg:     var(--lemon);
+    --sev-medium-bg:   #b9b9f9;
+    --sev-medium-fg:   var(--primary-deep);
+    --sev-low-bg:      var(--canvas-soft);
+    --sev-low-fg:      var(--ink-mute);
+  }
+
+  * { box-sizing: border-box; }
+  html { scroll-behavior: smooth; }
+  body {
+    margin: 0; background: var(--canvas); color: var(--ink);
+    font-family: 'Pretendard Variable', Pretendard, 'Malgun Gothic', '맑은 고딕',
+                  system-ui, -apple-system, 'Segoe UI', sans-serif;
+    font-size: 15px; font-weight: 400; line-height: 1.6;
+    word-break: keep-all;
+    -webkit-font-smoothing: antialiased; -moz-osx-font-smoothing: grayscale;
+  }
+  main.container { max-width: 980px; margin: 0 auto; padding: 0 0 80px; }
+
+  h1 { font-size: 40px; font-weight: 700; line-height: 1.18; letter-spacing: -1px; margin: 0 0 12px; }
+  h2 { font-size: 30px; font-weight: 700; line-height: 1.2; letter-spacing: -0.6px; margin: 64px 0 18px; }
+  p { margin: 0 0 12px; font-size: 16px; line-height: 1.6; }
+
+  .eyebrow {
+    font-size: 10px; font-weight: 500; letter-spacing: 0.1em;
+    text-transform: uppercase; color: var(--ink-mute);
+    margin-bottom: 8px; display: inline-block;
+  }
+
+  /* ── Hero ── */
+  .hero {
+    padding: 72px 56px 56px;
+    background:
+      radial-gradient(ellipse 70% 80% at 18% 30%, #fce0d0 0%, transparent 60%),
+      radial-gradient(ellipse 70% 80% at 82% 28%, #d8d4f5 0%, transparent 60%),
+      linear-gradient(180deg, #fbf6f0 0%, #ffffff 100%);
+  }
+  .hero-meta {
+    display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+    gap: 18px 28px; margin-top: 28px; padding-top: 24px;
+    border-top: 1px solid rgba(13, 37, 61, 0.10);
+  }
+  .hero-meta .meta-item dt {
+    font-size: 10px; font-weight: 500; letter-spacing: 0.08em;
+    text-transform: uppercase; color: var(--ink-mute); margin-bottom: 5px;
+  }
+  .hero-meta .meta-item dd {
+    margin: 0; font-size: 15px; font-weight: 500; color: var(--ink);
+    word-break: break-all; line-height: 1.5;
+  }
+
+  /* ── Badges (결과 상태) ── */
+  .badge-row { display: flex; flex-wrap: wrap; gap: 12px; margin: 24px 0 0; }
+  .status-badge {
+    display: inline-flex; align-items: center; gap: 8px;
+    padding: 10px 18px; border-radius: 10px;
+    font-size: 15px; font-weight: 700; color: #fff;
+    box-shadow: var(--shadow-1);
+  }
+  .status-badge .tag {
+    font-size: 10px; font-weight: 600; letter-spacing: 0.08em;
+    text-transform: uppercase; opacity: 0.85;
+  }
+  .status-badge.pass,    .status-badge.ready    { background: var(--green); }
+  .status-badge.caution                         { background: var(--lemon); }
+  .status-badge.blocked, .status-badge.notready { background: var(--ruby); }
+
+  .final-line {
+    margin: 18px 0 0; padding: 18px 24px; border-radius: 12px;
+    background: var(--brand-dark-900); color: var(--on-primary);
+    font-size: 20px; font-weight: 700; letter-spacing: -0.3px;
+    box-shadow: var(--shadow-2);
+  }
+
+  /* ── Summary count cards ── */
+  .summary-cards {
+    display: grid; grid-template-columns: repeat(4, 1fr);
+    gap: 14px; margin: 24px 0 0;
+  }
+  .count-card {
+    border: 1px solid var(--hairline); border-radius: 12px;
+    padding: 18px 16px; text-align: center; background: var(--canvas);
+  }
+  .count-card .n { font-size: 30px; font-weight: 700; line-height: 1; }
+  .count-card .l { font-size: 13px; color: var(--ink-mute); margin-top: 6px; }
+  .count-card.critical .n { color: var(--ruby); }
+  .count-card.high .n     { color: var(--lemon); }
+  .count-card.medium .n   { color: var(--primary-deep); }
+  .count-card.low .n      { color: var(--ink-mute); }
+
+  /* ── Page body ── */
+  .page-body { padding: 8px 56px 0; }
+
+  .section-title { margin: 64px 0 18px; }
+  .section-title .eyebrow { color: var(--primary); }
+  .section-title h2 { margin: 6px 0 0; }
+  .section-title .lead { font-size: 17px; color: var(--ink-mute); margin: 12px 0 0; }
+
+  /* ── Tables ── */
+  table.report-table {
+    width: 100%; border-collapse: collapse; margin: 16px 0;
+    background: var(--canvas); border: 1px solid var(--hairline);
+    border-radius: 10px; overflow: hidden; font-size: 14px;
+  }
+  table.report-table th, table.report-table td {
+    text-align: left; padding: 13px 16px;
+    border-bottom: 1px solid var(--hairline); vertical-align: top;
+  }
+  table.report-table thead th {
+    background: var(--canvas-soft);
+    font-size: 10px; font-weight: 700; letter-spacing: 0.08em;
+    text-transform: uppercase; color: var(--ink-mute);
+  }
+  table.report-table tbody tr:last-child td { border-bottom: none; }
+  table.report-table code {
+    background: var(--canvas-soft); border: 1px solid var(--hairline);
+    padding: 1px 6px; border-radius: 4px;
+    font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+    font-size: 12.5px;
+  }
+  tr.git-warn { background: rgba(234, 34, 97, 0.06); }
+  tr.git-warn td { color: var(--ink); }
+  tr.git-warn .git-note { color: var(--ruby); font-weight: 700; }
+
+  /* ── Severity badges ── */
+  .badge {
+    display: inline-block; padding: 3px 10px; border-radius: 9999px;
+    font-size: 11px; font-weight: 700; white-space: nowrap;
+  }
+  .badge-critical { background: var(--sev-critical-bg); color: var(--sev-critical-fg); }
+  .badge-high     { background: var(--sev-high-bg);     color: var(--sev-high-fg); }
+  .badge-medium   { background: var(--sev-medium-bg);   color: var(--sev-medium-fg); }
+  .badge-low      { background: var(--sev-low-bg);      color: var(--sev-low-fg); }
+
+  /* ── Check marks ── */
+  .check-ok   { color: var(--green);   font-weight: 700; }
+  .check-no   { color: var(--ruby);    font-weight: 700; }
+  .check-skip { color: var(--ink-mute); font-weight: 700; }
+
+  /* ── Prompt cards (복붙용) ── */
+  .prompt-card {
+    border: 1px solid var(--hairline); border-radius: 12px;
+    padding: 24px 28px; margin: 18px 0; background: var(--canvas);
+  }
+  .prompt-card:hover { box-shadow: var(--shadow-1); }
+  .prompt-card .ph { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; }
+  .prompt-card h3 { margin: 0; font-size: 19px; font-weight: 700; letter-spacing: -0.2px; }
+  .prompt-card .desc { font-size: 15px; color: var(--ink-secondary); margin: 0 0 12px; }
+  .prompt-card pre {
+    background: var(--code-bg); color: #e8eaef;
+    padding: 20px 22px; border-radius: 12px; overflow-x: auto; margin: 0;
+    font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+    font-size: 13px; line-height: 1.7; white-space: pre-wrap;
+    box-shadow: var(--shadow-2);
+  }
+  .prompt-hint { font-size: 13px; color: var(--ink-mute); margin: 8px 0 0; }
+
+  /* ── Info box ── */
+  .info-box {
+    background: var(--canvas-soft); border-left: 3px solid var(--primary);
+    padding: 14px 18px; margin: 14px 0; border-radius: 0 8px 8px 0;
+    font-size: 15px; line-height: 1.6;
+  }
+
+  footer.report-footer {
+    margin: 72px 56px 0; padding-top: 28px;
+    border-top: 1px solid var(--hairline);
+    font-size: 13px; color: var(--ink-mute); text-align: center;
+  }
+
+  @media (max-width: 768px) {
+    .hero { padding: 48px 24px 40px; }
+    .page-body { padding: 8px 24px 0; }
+    h1 { font-size: 30px; }
+    h2 { font-size: 24px; margin: 48px 0 14px; }
+    .summary-cards { grid-template-columns: repeat(2, 1fr); }
+    footer.report-footer { margin: 56px 24px 0; }
+  }
+</style>
+</head>
+<body>
+<main class="container">
+
+  <!-- ========== 헤더 + 두 배지 + 최종 + 카운트 ========== -->
+  <section class="hero">
+    <div class="eyebrow">배포 전 검토</div>
+    <h1>배포 전 검토 결과</h1>
+    <p style="font-size:17px;color:var(--ink-secondary);margin:0;">보안 점검과 배포 준비 두 가지를 함께 확인했어요. 아래에서 차례대로 보시면 됩니다.</p>
+
+    <!-- {{META_PATH}} : 메타 4종. 예시 형태 (항목마다 .meta-item 하나) -->
+    <dl class="hero-meta">
+      {{META_PATH}}
+      <!-- 예시:
+      <div class="meta-item"><dt>대상 폴더</dt><dd><code>D:\...\my-app</code></dd></div>
+      <div class="meta-item"><dt>코드 저장소</dt><dd>fursys-group-hub/my-app</dd></div>
+      <div class="meta-item"><dt>프로젝트 종류</dt><dd>Next.js</dd></div>
+      <div class="meta-item"><dt>검사 일시</dt><dd>2026-06-02 17:30</dd></div>
+      -->
+    </dl>
+
+    <!-- 두 배지: 보안 결과 + 배포 준비 -->
+    <div class="badge-row">
+      <!-- {{SECURITY_BADGE}} : 통과=class "pass" / 주의="caution" / 차단="blocked"
+        예) <div class="status-badge pass"><span class="tag">보안</span> 통과</div> -->
+      {{SECURITY_BADGE}}
+      <!-- {{DEPLOY_BADGE}} : 완료=class "ready" / 불가="notready"
+        예) <div class="status-badge ready"><span class="tag">배포 준비</span> 완료</div> -->
+      {{DEPLOY_BADGE}}
+    </div>
+
+    <!-- {{FINAL_LINE}} : 최종 한 줄. 예) ✅ 배포 가능합니다  /  ❌ 배포 불가 — Dockerfile이 없어요 -->
+    <div class="final-line">{{FINAL_LINE}}</div>
+
+    <!-- {{SUMMARY_CARDS}} : 치명/높음/중간/낮음 카운트 카드 4개 (아래 4개를 값만 채움) -->
+    <div class="summary-cards">
+      {{SUMMARY_CARDS}}
+      <!-- 예시:
+      <div class="count-card critical"><div class="n">1</div><div class="l">치명</div></div>
+      <div class="count-card high"><div class="n">2</div><div class="l">높음</div></div>
+      <div class="count-card medium"><div class="n">0</div><div class="l">중간</div></div>
+      <div class="count-card low"><div class="n">3</div><div class="l">낮음</div></div>
+      -->
+    </div>
+  </section>
+
+  <div class="page-body">
+
+    <!-- ========== 🔒 보안 점검 ========== -->
+    <div class="section-title">
+      <div class="eyebrow">Security</div>
+      <h2>🔒 보안 점검</h2>
+      <p class="lead">코드와 기록에서 발견한 보안 문제예요. 치명·높음은 고친 뒤 다시 검토해주세요.</p>
+    </div>
+
+    <table class="report-table">
+      <thead>
+        <tr><th>심각도</th><th>위치</th><th>유형</th><th>설명</th></tr>
+      </thead>
+      <tbody>
+        {{SECURITY_FINDINGS_ROWS}}
+        <!-- LLM: 발견된 문제마다 아래 행을 반복. 위치 없으면 - 표기.
+        <tr>
+          <td><span class="badge badge-critical">치명</span></td>
+          <td><code>src/config.ts:12</code></td>
+          <td>하드코딩된 키</td>
+          <td>코드에 비밀 키가 그대로 적혀 있어요.</td>
+        </tr>
+        git 이력에 남은 항목은 tr 에 class="git-warn" 을 주고 설명 끝에 경고를 붙인다:
+        <tr class="git-warn">
+          <td><span class="badge badge-critical">치명</span></td>
+          <td><code>.env</code></td>
+          <td>기록(git 이력) 노출</td>
+          <td><span class="git-note">기록(git 이력)에 남음</span> — 코드에서 지워도 과거 기록에 남아 있으니, 해당 키를 반드시 폐기·재발급 하고 IT본부에 알리세요.</td>
+        </tr>
+        -->
+      </tbody>
+    </table>
+
+    <!-- 치명/높음 복붙 수정 프롬프트 -->
+    {{SECURITY_PROMPTS}}
+    <!-- LLM: aiPrompt 있는 치명/높음 항목마다 아래 카드를 반복. aiPrompt 가 null이면 카드 대신 설명만.
+    <div class="prompt-card">
+      <div class="ph"><span class="badge badge-critical">치명</span><h3>하드코딩된 키 제거</h3></div>
+      <p class="desc">아래 글을 그대로 복사해 Claude Code(또는 Cursor 등 AI 도구)에 붙여넣으면 이 문제를 고쳐줍니다.</p>
+      <pre>src/config.ts 12번째 줄의 하드코딩된 API 키를 환경변수로 옮겨주세요...</pre>
+      <p class="prompt-hint">복사 → AI 도구에 붙여넣기 → 안내대로 진행</p>
+    </div>
+    -->
+
+    <!-- ========== 🚀 배포 준비 ========== -->
+    <div class="section-title">
+      <div class="eyebrow">Deploy readiness</div>
+      <h2>🚀 배포 준비</h2>
+      <p class="lead">사내 서버에 올릴 수 있는 상태인지 확인했어요. ✅ 통과 · ❌ 문제 · ➖ 권장입니다.</p>
+    </div>
+
+    <table class="report-table">
+      <thead>
+        <tr><th>점검 항목</th><th>결과</th><th>설명</th></tr>
+      </thead>
+      <tbody>
+        {{DEPLOY_CHECK_ROWS}}
+        <!-- LLM: Dockerfile/포트/시작 방법/필수 설정값/상태점검 각 행. 막는 항목(❌)은 설명에서 강조.
+        <tr><td>Dockerfile</td><td><span class="check-ok">✅</span></td><td>배포에 쓸 Dockerfile이 있어요.</td></tr>
+        <tr><td>포트 일치</td><td><span class="check-no">❌</span></td><td>Dockerfile 포트와 앱 실제 포트가 달라요.</td></tr>
+        <tr><td>상태점검(HEALTHCHECK)</td><td><span class="check-skip">➖</span></td><td>없어도 배포는 되지만 넣으면 더 안전해요.</td></tr>
+        -->
+      </tbody>
+    </table>
+
+    <!-- 배포 준비 문제 시 복붙 프롬프트 (예: 프레임워크별 Dockerfile 생성) -->
+    {{DEPLOY_PROMPTS}}
+    <!-- LLM: 문제 항목마다 아래 카드를 반복. 문제 없으면 이 영역은 비워둔다.
+    <div class="prompt-card">
+      <div class="ph"><span class="badge badge-high">높음</span><h3>표준 Dockerfile 만들기</h3></div>
+      <p class="desc">아래 글을 그대로 복사해 AI 도구에 붙여넣으면 배포용 Dockerfile을 만들어줍니다.</p>
+      <pre>이 Next.js 프로젝트에 사내 서버 배포용 Dockerfile을 만들어주세요...</pre>
+      <p class="prompt-hint">복사 → AI 도구에 붙여넣기 → 안내대로 진행</p>
+    </div>
+    -->
+
+    <!-- ========== 설정값 정리 ========== -->
+    <div class="section-title">
+      <div class="eyebrow">Settings</div>
+      <h2>⚙️ 설정값 정리</h2>
+      <p class="lead">이 앱이 쓰는 설정값과 다루는 방법이에요.</p>
+    </div>
+
+    <table class="report-table">
+      <thead>
+        <tr><th>설정값 이름</th><th>다루는 방법</th><th>설명</th></tr>
+      </thead>
+      <tbody>
+        {{ENV_ROWS}}
+        <!-- LLM: 설정값마다 아래 행을 반복. 다루는 방법은 쉬운 우리말로:
+             build → "화면(브라우저)에 포함될 수 있음 → 비밀번호·키 넣지 말 것"
+             runtime → "서버에서만 쓰는 일반 값"
+             locked → "비밀번호·키 → 안전하게 잠가서 보관(화면 노출 금지)"
+        <tr><td><code>NEXT_PUBLIC_API_URL</code></td><td>화면(브라우저)에 포함될 수 있음 → 비밀번호·키 넣지 말 것</td><td>접속할 API 주소</td></tr>
+        <tr><td><code>DB_PASSWORD</code></td><td>비밀번호·키 → 안전하게 잠가서 보관(화면 노출 금지)</td><td>데이터베이스 비밀번호</td></tr>
+        -->
+      </tbody>
+    </table>
+
+  </div><!-- /.page-body -->
+
+  <footer class="report-footer">
+    배포 전 검토 · fursys-deploy-hub · 퍼시스홀딩스 IT본부 AI추진팀
+  </footer>
+
+</main>
+</body>
+</html>

@@ -1,0 +1,16 @@
+{
+  "name": "fursys-deploy-hub",
+  "owner": {
+    "name": "Fursys IT본부 AI추진팀",
+    "email": "it_ai@fursys.com"
+  },
+  "description": "사내 서버 자가배포/보안 검사 플러그인 (브랜드 실무자용)",
+  "plugins": [
+    {
+      "name": "fursys-deploy-hub",
+      "source": "./plugins/fursys-deploy-hub",
+      "description": "프로젝트 생성 → 배포 전 검토(보안+배포가능성) → 최초 배포를 자연어 또는 슬래시 커맨드(/new-project·/deploy-check·/deploy·/my-apps)로. 자격증명 없이 사내 서버 배포(이후 git push 자동 재배포).",
+      "version": "3.8.1"
+    }
+  ]
+}

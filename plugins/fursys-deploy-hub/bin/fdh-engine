@@ -1,0 +1,584 @@
+#!/usr/bin/env node
+
+// src/cli.ts
+import * as readline from "readline";
+
+// src/index.ts
+import * as path5 from "path";
+
+// src/scanner.ts
+import { execSync } from "child_process";
+import * as fs from "fs";
+import * as path from "path";
+var GIT_TIMEOUT = 3e4;
+var SKIP_DIRS = /* @__PURE__ */ new Set([
+  ".git",
+  "node_modules",
+  "__pycache__",
+  ".next",
+  "dist",
+  "build",
+  "out",
+  ".nuxt",
+  ".output",
+  "target",
+  ".gradle",
+  ".idea",
+  ".vscode",
+  "venv",
+  ".venv",
+  "env",
+  ".tox",
+  ".mypy_cache",
+  ".claude",
+  ".bkit"
+]);
+var SKIP_FILES = /* @__PURE__ */ new Set([
+  "package-lock.json",
+  "yarn.lock",
+  "pnpm-lock.yaml",
+  "bun.lockb",
+  "Cargo.lock",
+  "poetry.lock",
+  "composer.lock",
+  "Gemfile.lock"
+]);
+var BINARY_EXTENSIONS = /* @__PURE__ */ new Set([
+  ".png",
+  ".jpg",
+  ".jpeg",
+  ".gif",
+  ".ico",
+  ".svg",
+  ".webp",
+  ".bmp",
+  ".woff",
+  ".woff2",
+  ".ttf",
+  ".otf",
+  ".eot",
+  ".zip",
+  ".tar",
+  ".gz",
+  ".rar",
+  ".7z",
+  ".pdf",
+  ".doc",
+  ".docx",
+  ".xls",
+  ".xlsx",
+  ".exe",
+  ".dll",
+  ".so",
+  ".dylib",
+  ".mp3",
+  ".mp4",
+  ".avi",
+  ".mov",
+  ".webm",
+  ".db",
+  ".sqlite",
+  ".sqlite3",
+  ".jar",
+  ".war",
+  ".class"
+]);
+var MAX_FILE_SIZE = 1048576;
+function walkDir(dir, rootDir) {
+  const results = [];
+  let entries;
+  try {
+    entries = fs.readdirSync(dir, { withFileTypes: true });
+  } catch {
+    return results;
+  }
+  for (const entry of entries) {
+    const fullPath = path.join(dir, entry.name);
+    if (entry.isDirectory()) {
+      if (SKIP_DIRS.has(entry.name)) continue;
+      results.push(...walkDir(fullPath, rootDir));
+    } else if (entry.isFile()) {
+      if (SKIP_FILES.has(entry.name)) continue;
+      if (BINARY_EXTENSIONS.has(path.extname(entry.name).toLowerCase())) continue;
+      results.push(fullPath);
+    }
+  }
+  return results;
+}
+function gitDeployableSet(rootDir) {
+  if (!fs.existsSync(path.join(rootDir, ".git"))) return null;
+  try {
+    const out = execSync("git ls-files --cached --others --exclude-standard", {
+      cwd: rootDir,
+      timeout: GIT_TIMEOUT,
+      encoding: "utf-8",
+      stdio: ["pipe", "pipe", "pipe"]
+    });
+    return new Set(out.split("\n").map((l) => l.trim()).filter(Boolean));
+  } catch {
+    return null;
+  }
+}
+function scanFiles(rootDir) {
+  const allPaths = walkDir(rootDir, rootDir);
+  const deployable = gitDeployableSet(rootDir);
+  const results = [];
+  for (const filePath of allPaths) {
+    try {
+      const relPath = path.relative(rootDir, filePath).replace(/\\/g, "/");
+      if (deployable && !deployable.has(relPath)) continue;
+      const stat = fs.statSync(filePath);
+      if (stat.size > MAX_FILE_SIZE) continue;
+      const content = fs.readFileSync(filePath, "utf-8");
+      results.push({
+        path: relPath,
+        content
+      });
+    } catch {
+    }
+  }
+  return results;
+}
+
+// src/framework.ts
+import * as path2 from "path";
+function detectFramework(files) {
+  const fileNames = new Set(files.map((f) => path2.basename(f.path)));
+  const find = (base) => files.find((f) => path2.basename(f.path) === base);
+  if (files.some((f) => /^next\.config\.(js|mjs|ts)$/.test(path2.basename(f.path)))) return "next";
+  const pkg = files.find((f) => f.path === "package.json");
+  if (pkg && /"next"\s*:/.test(pkg.content)) return "next";
+  const gradleOrPom = files.find(
+    (f) => path2.basename(f.path) === "build.gradle" || path2.basename(f.path) === "build.gradle.kts" || path2.basename(f.path) === "pom.xml"
+  );
+  if (gradleOrPom && /spring-boot/i.test(gradleOrPom.content)) return "spring";
+  if (fileNames.has("nest-cli.json")) return "nest";
+  if (pkg && /@nestjs\//.test(pkg.content)) return "nest";
+  if (files.some((f) => /^vite\.config\.(js|ts|mjs)$/.test(path2.basename(f.path)))) return "vite";
+  if (pkg && /"vite"\s*:/.test(pkg.content)) return "vite";
+  if (files.some((f) => f.path === ".streamlit/config.toml") || fileNames.has("streamlit_app.py")) {
+    return "streamlit";
+  }
+  const reqTxt = find("requirements.txt");
+  const pyProject = find("pyproject.toml");
+  const pyText = `${reqTxt?.content ?? ""}
+${pyProject?.content ?? ""}`;
+  if (/streamlit/i.test(pyText)) return "streamlit";
+  if (/fastapi/i.test(pyText)) return "fastapi";
+  if (fileNames.has("manage.py") || /(^|\n)\s*django/i.test(pyText)) return "django";
+  return "unknown";
+}
+
+// src/envvars.ts
+import * as path3 from "path";
+var BUILD_PREFIXES = ["NEXT_PUBLIC_", "VITE_", "REACT_APP_"];
+var LOCKED_PATTERNS = [
+  /SECRET/i,
+  /PASSWORD/i,
+  /PASSWD/i,
+  /TOKEN/i,
+  /_KEY$/i,
+  /API_?KEY/i,
+  /PRIVATE.*KEY/i,
+  /^DATABASE_URL$/i,
+  /^DB_URL$/i,
+  /^REDIS_URL$/i
+];
+function classifyEnvVar(name) {
+  if (BUILD_PREFIXES.some((p) => name.startsWith(p))) return "build";
+  if (LOCKED_PATTERNS.some((p) => p.test(name))) return "locked";
+  return "runtime";
+}
+function isEnvFile(p) {
+  return /^\.env(\.|$)/.test(path3.basename(p));
+}
+function extractEnvVars(files) {
+  const names = /* @__PURE__ */ new Set();
+  for (const file of files) {
+    if (isEnvFile(file.path)) {
+      for (const line of file.content.split("\n")) {
+        const trimmed = line.trim();
+        if (!trimmed || trimmed.startsWith("#")) continue;
+        const m = trimmed.match(/^([A-Z_][A-Z0-9_]*)\s*=/);
+        if (m) names.add(m[1]);
+      }
+      continue;
+    }
+    if (/\.(ts|tsx|js|jsx|mjs|cjs|py)$/.test(file.path)) {
+      for (const m of file.content.matchAll(/process\.env\.([A-Z_][A-Z0-9_]*)/g)) names.add(m[1]);
+      for (const m of file.content.matchAll(/import\.meta\.env\.([A-Z_][A-Z0-9_]*)/g)) names.add(m[1]);
+      for (const m of file.content.matchAll(
+        /os\.environ(?:\.get)?\s*\[?\s*['"]([A-Z_][A-Z0-9_]*)['"]/g
+      )) {
+        names.add(m[1]);
+      }
+    }
+  }
+  return [...names].sort().map((name) => ({ name, class: classifyEnvVar(name) }));
+}
+
+// src/secret-rules.ts
+var SECRET_RULES = [
+  {
+    id: "SEC-01",
+    name: "AWS Access Key ID",
+    pattern: "AKIA[0-9A-Z]{16}",
+    severity: "critical",
+    message: "AWS Access Key \uB178\uCD9C"
+  },
+  {
+    id: "SEC-02",
+    name: "AWS Secret Access Key",
+    pattern: `(?:aws_secret_access_key|aws_secret|secretAccessKey)\\s*[:=]\\s*['"]?([A-Za-z0-9/+=]{40})`,
+    severity: "critical",
+    message: "AWS Secret Access Key \uB178\uCD9C"
+  },
+  {
+    id: "SEC-03",
+    name: "RSA/SSH/EC Private Key",
+    pattern: "-----BEGIN (?:RSA |OPENSSH |EC )?PRIVATE KEY-----",
+    severity: "critical",
+    message: "Private Key \uB178\uCD9C \u2014 \uC989\uC2DC \uD3D0\uAE30 \uD544\uC694"
+  },
+  {
+    id: "SEC-04",
+    name: "DB Connection String",
+    pattern: "(?:mysql|postgres|postgresql|mongodb|mssql)://[^:]+:[^@\\s]+@",
+    severity: "critical",
+    message: "DB \uC5F0\uACB0 \uBB38\uC790\uC5F4\uC5D0 \uD3C9\uBB38 \uBE44\uBC00\uBC88\uD638 \uD3EC\uD568"
+  },
+  {
+    id: "SEC-05",
+    name: "Anthropic API Key",
+    pattern: "sk-ant-api03-[A-Za-z0-9_\\-]{90,}",
+    severity: "critical",
+    message: "Anthropic API Key \uB178\uCD9C"
+  },
+  {
+    id: "SEC-06",
+    name: "OpenAI API Key",
+    pattern: "sk-(?:proj-)?[A-Za-z0-9]{40,}",
+    severity: "critical",
+    message: "OpenAI API Key \uB178\uCD9C"
+  },
+  {
+    id: "SEC-07",
+    name: "JWT Token (Hardcoded)",
+    pattern: "eyJ[A-Za-z0-9_-]+\\.eyJ[A-Za-z0-9_-]+\\.[A-Za-z0-9_-]+",
+    severity: "critical",
+    message: "\uD558\uB4DC\uCF54\uB529\uB41C JWT \uD1A0\uD070"
+  },
+  {
+    id: "SEC-08",
+    name: "Bearer Token (Hardcoded)",
+    pattern: "Bearer\\s+[A-Za-z0-9._\\-]{20,}",
+    severity: "critical",
+    message: "\uD558\uB4DC\uCF54\uB529\uB41C Bearer \uD1A0\uD070 \u2014 \uD658\uACBD\uBCC0\uC218\uB85C \uBD84\uB9AC \uD544\uC694"
+  },
+  {
+    id: "SEC-09",
+    name: "Google API Key",
+    pattern: "AIza[0-9A-Za-z\\-_]{35}",
+    severity: "critical",
+    message: "Google API Key \uB178\uCD9C"
+  },
+  {
+    id: "SEC-10",
+    name: "Slack Token",
+    pattern: "xox[bpsoa]-[0-9]{10,}-[0-9]{10,}-[A-Za-z0-9]{24,}",
+    severity: "critical",
+    message: "Slack Token \uB178\uCD9C"
+  },
+  {
+    id: "SEC-11",
+    name: "Generic API Key Assignment",
+    pattern: `(?:api[_\\-]?key|api[_\\-]?secret)\\s*[:=]\\s*['"][A-Za-z0-9/+=_\\-]{16,}['"]`,
+    severity: "high",
+    message: "API Key \uCD94\uC815 \uAC12 \uB178\uCD9C \u2014 \uD658\uACBD\uBCC0\uC218\uB85C \uBD84\uB9AC \uAD8C\uC7A5"
+  },
+  {
+    id: "SEC-12",
+    name: "Plaintext Password Assignment",
+    pattern: `(?:password|passwd|pwd)\\s*[:=]\\s*['"][^'"]{6,}['"]`,
+    severity: "critical",
+    message: "\uD3C9\uBB38 \uBE44\uBC00\uBC88\uD638 \u2014 \uD658\uACBD\uBCC0\uC218\uB85C \uBD84\uB9AC \uD544\uC694"
+  },
+  {
+    id: "SEC-13",
+    name: "BCrypt Hash (Hardcoded)",
+    pattern: "\\$2[aby]\\$\\d{1,2}\\$[./A-Za-z0-9]{53}",
+    severity: "medium",
+    message: "\uD558\uB4DC\uCF54\uB529\uB41C BCrypt \uD574\uC2DC \u2014 \uD14C\uC2A4\uD2B8 \uC794\uC7AC \uD655\uC778 \uD544\uC694"
+  },
+  {
+    id: "SEC-14",
+    name: "Keystore Path/Password",
+    pattern: `(?:keystore_path|keystore_password|KEYSTORE)\\s*[:=]\\s*['"][^'"]+['"]`,
+    severity: "medium",
+    message: "Keystore \uACBD\uB85C \uB610\uB294 \uBE44\uBC00\uBC88\uD638 \uD558\uB4DC\uCF54\uB529"
+  }
+];
+var PLACEHOLDER = [
+  /dummy/i,
+  /fake/i,
+  /test[_-]?key/i,
+  /placeholder/i,
+  /sample/i,
+  /your[_-]?api[_-]?key/i,
+  /xxx+/i,
+  /changeme/i,
+  /example/i
+];
+function looksLikePlaceholder(value) {
+  return PLACEHOLDER.some((p) => p.test(value));
+}
+var FP_PATH = [
+  /(^|\/)__tests__\//,
+  /(^|\/)tests?\//,
+  /\.test\./,
+  /\.spec\./,
+  /(^|\/)fixtures?\//,
+  /(^|\/)mocks?\//,
+  /\.example\./,
+  /(^|\/)examples?\//,
+  /(^|\/)docs?\//,
+  /\.md$/,
+  /\.mdx$/
+];
+function isFalsePositivePath(file) {
+  return FP_PATH.some((p) => p.test(file));
+}
+
+// src/ai-prompt.ts
+function buildAiPrompt(f) {
+  if (f.severity !== "critical" && f.severity !== "high") return null;
+  const loc = f.file ? f.line != null ? `${f.file}:${f.line}` : f.file : "\uD574\uB2F9 \uD30C\uC77C";
+  if (f.inGitHistory) {
+    return `${loc}\uC5D0\uC11C \uBC1C\uACAC\uB41C "${f.rule}" \uC2DC\uD06C\uB9BF\uC744 \uC989\uC2DC \uD3D0\uAE30\xB7\uC7AC\uBC1C\uAE09\uD558\uACE0, \uCF54\uB4DC\uC5D0\uC11C \uC81C\uAC70\uD55C \uB4A4 \uD658\uACBD\uBCC0\uC218\uB85C \uC62E\uAE30\uACE0 git \uC774\uB825\uC5D0\uC11C\uB3C4 \uC644\uC804\uD788 \uC81C\uAC70\uD574\uC918 (git filter-repo \uB4F1).`;
+  }
+  return `${loc}\uC758 \uD558\uB4DC\uCF54\uB529\uB41C "${f.rule}"\uC744(\uB97C) \uD658\uACBD\uBCC0\uC218\uB85C \uC62E\uAE30\uACE0, \uCF54\uB4DC\uC5D0\uC11C \uC81C\uAC70\uD55C \uB4A4 .gitignore\uC640 \uBC30\uD3EC \uD658\uACBD\uBCC0\uC218 \uC124\uC815\uC744 \uC810\uAC80\uD574\uC918.`;
+}
+
+// src/secret-scan.ts
+function scanSecrets(files) {
+  const findings = [];
+  const compiled = SECRET_RULES.map((rule) => {
+    try {
+      return { rule, regex: new RegExp(rule.pattern, "i") };
+    } catch {
+      return null;
+    }
+  }).filter((x) => x !== null);
+  for (const file of files) {
+    if (isFalsePositivePath(file.path)) continue;
+    const lines = file.content.split("\n");
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i];
+      for (const { rule, regex } of compiled) {
+        const match = regex.exec(line);
+        if (!match) continue;
+        const value = match[1] || match[0];
+        if (looksLikePlaceholder(value)) continue;
+        const base = {
+          severity: rule.severity,
+          rule: rule.name,
+          file: file.path,
+          line: i + 1,
+          message: rule.message,
+          inGitHistory: false
+        };
+        findings.push({ ...base, aiPrompt: buildAiPrompt(base) });
+      }
+    }
+  }
+  return findings;
+}
+
+// src/git-history.ts
+import { execSync as execSync2 } from "child_process";
+import * as fs2 from "fs";
+import * as path4 from "path";
+var TIMEOUT = 3e4;
+var ENV_TEMPLATE_RE = /^\.env\.(example|sample|template|dist|defaults)$/;
+function runGit(args, cwd) {
+  try {
+    return execSync2(`git ${args.join(" ")}`, {
+      cwd,
+      timeout: TIMEOUT,
+      encoding: "utf-8",
+      stdio: ["pipe", "pipe", "pipe"]
+    }).trim();
+  } catch {
+    return null;
+  }
+}
+function isGitRepo(cwd) {
+  return fs2.existsSync(path4.join(cwd, ".git"));
+}
+function getOriginUrl(cwd) {
+  return runGit(["remote", "get-url", "origin"], cwd);
+}
+function checkGitHistory(cwd) {
+  if (!isGitRepo(cwd)) return [];
+  const findings = [];
+  const sensitiveFiles = runGit(
+    [
+      "log",
+      "--all",
+      "--full-history",
+      "--diff-filter=A",
+      "--name-only",
+      "--pretty=format:",
+      "--",
+      ".env",
+      '".env.*"',
+      '"*.pem"',
+      '"*.key"',
+      '"*.jks"'
+    ],
+    cwd
+  );
+  if (sensitiveFiles) {
+    const files = [...new Set(sensitiveFiles.split("\n").filter(Boolean))].filter((file) => !ENV_TEMPLATE_RE.test(path4.basename(file)));
+    for (const file of files) {
+      const base = {
+        severity: "critical",
+        rule: "Sensitive File in Git History",
+        file,
+        line: null,
+        message: "Git \uC774\uB825\uC5D0 \uBBFC\uAC10 \uD30C\uC77C \uCEE4\uBC0B \uC774\uB825 \uC874\uC7AC \u2014 \uC2DC\uD06C\uB9BF \uC7AC\uBC1C\uAE09 + \uC774\uB825 \uC815\uB9AC \uD544\uC694",
+        inGitHistory: true
+      };
+      findings.push({ ...base, aiPrompt: buildAiPrompt(base) });
+    }
+  }
+  const stringScans = [
+    {
+      needle: "AKIA",
+      rule: "AWS Key in Git History",
+      message: "Git \uC774\uB825\uC5D0\uC11C AWS Access Key \uD328\uD134 \uBC1C\uACAC \u2014 \uD0A4 \uB85C\uD14C\uC774\uC158 + \uC774\uB825 \uC815\uB9AC \uD544\uC218"
+    },
+    {
+      needle: "BEGIN PRIVATE KEY",
+      rule: "Private Key in Git History",
+      message: "Git \uC774\uB825\uC5D0\uC11C Private Key \uD328\uD134 \uBC1C\uACAC \u2014 \uD0A4 \uD3D0\uAE30 + \uC774\uB825 \uC815\uB9AC \uD544\uC218"
+    },
+    {
+      needle: "sk-ant-api03-",
+      rule: "Anthropic Key in Git History",
+      message: "Git \uC774\uB825\uC5D0\uC11C Anthropic API Key \uD328\uD134 \uBC1C\uACAC \u2014 \uD0A4 \uC7AC\uBC1C\uAE09 + \uC774\uB825 \uC815\uB9AC \uD544\uC218"
+    }
+  ];
+  for (const scan2 of stringScans) {
+    const hits = runGit(["log", "--all", "-S", `"${scan2.needle}"`, "--oneline"], cwd);
+    if (hits && hits.length > 0) {
+      const count = hits.split("\n").filter(Boolean).length;
+      const base = {
+        severity: "critical",
+        rule: scan2.rule,
+        file: null,
+        line: null,
+        message: `${scan2.message} (${count}\uAC1C \uCEE4\uBC0B)`,
+        inGitHistory: true
+      };
+      findings.push({ ...base, aiPrompt: buildAiPrompt(base) });
+    }
+  }
+  return findings;
+}
+
+// src/index.ts
+var SEVERITY_ORDER = { critical: 0, high: 1, medium: 2, low: 3 };
+function determineVerdict(findings) {
+  const hasCritical = findings.some((f) => f.severity === "critical");
+  const inHistory = findings.some((f) => f.inGitHistory);
+  if (hasCritical || inHistory) return "blocked";
+  if (findings.some((f) => f.severity === "high")) return "caution";
+  return "pass";
+}
+function verdictToExitCode(verdict) {
+  if (verdict === "blocked") return 2;
+  if (verdict === "caution") return 1;
+  return 0;
+}
+function scan(args) {
+  const rootDir = path5.resolve(args.path);
+  const files = scanFiles(rootDir);
+  const framework = detectFramework(files);
+  const envVars = extractEnvVars(files);
+  const findings = [...scanSecrets(files), ...checkGitHistory(rootDir)];
+  findings.sort((a, b) => SEVERITY_ORDER[a.severity] - SEVERITY_ORDER[b.severity]);
+  const summary = { critical: 0, high: 0, medium: 0, low: 0 };
+  for (const f of findings) summary[f.severity]++;
+  let repo = args.repo ?? null;
+  if (repo == null && args.noPrompt && isGitRepo(rootDir)) {
+    repo = getOriginUrl(rootDir);
+  }
+  return {
+    schemaVersion: 1,
+    target: {
+      path: rootDir,
+      repo,
+      framework
+    },
+    verdict: determineVerdict(findings),
+    summary,
+    findings,
+    envVars
+  };
+}
+
+// src/cli.ts
+function parseArgs(argv) {
+  let path6 = "";
+  let json = false;
+  let noPrompt = false;
+  for (const arg of argv) {
+    if (arg === "--json") json = true;
+    else if (arg === "--no-prompt") noPrompt = true;
+    else if (arg.startsWith("--")) {
+      process.stderr.write(`\uC54C \uC218 \uC5C6\uB294 \uC635\uC158: ${arg}
+`);
+    } else if (!path6) {
+      path6 = arg;
+    }
+  }
+  return { path: path6 || ".", json: json || true, noPrompt };
+}
+async function promptRepoUrl(cwd) {
+  const origin = isGitRepo(cwd) ? getOriginUrl(cwd) : null;
+  const rl = readline.createInterface({ input: process.stdin, output: process.stderr });
+  const question = origin ? `? Git \uC800\uC7A5\uC18C URL [${origin}]: ` : "? Git \uC800\uC7A5\uC18C URL (\uC5C6\uC73C\uBA74 Enter): ";
+  return new Promise((resolve2) => {
+    rl.question(question, (answer) => {
+      rl.close();
+      const trimmed = answer.trim();
+      resolve2(trimmed || origin || null);
+    });
+  });
+}
+async function main() {
+  const args = parseArgs(process.argv.slice(2));
+  let repo = null;
+  if (args.noPrompt) {
+    repo = isGitRepo(args.path) ? getOriginUrl(args.path) : null;
+  } else if (process.stdin.isTTY) {
+    repo = await promptRepoUrl(args.path);
+  } else {
+    repo = isGitRepo(args.path) ? getOriginUrl(args.path) : null;
+  }
+  process.stderr.write(`[engine] scanning ${args.path} ...
+`);
+  const verdict = scan({ path: args.path, noPrompt: args.noPrompt, repo });
+  process.stderr.write(
+    `[engine] verdict=${verdict.verdict} critical=${verdict.summary.critical} high=${verdict.summary.high} medium=${verdict.summary.medium} low=${verdict.summary.low}
+`
+  );
+  process.stdout.write(JSON.stringify(verdict, null, 2) + "\n");
+  process.exit(verdictToExitCode(verdict.verdict));
+}
+main().catch((err) => {
+  process.stderr.write(`[engine] error: ${err?.message ?? err}
+`);
+  process.exit(2);
+});
