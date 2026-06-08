@@ -3,7 +3,7 @@
 # 결정적 plumbing. 비밀값(키)은 인자/표준입력으로 받고 echo 하지 않는다.
 #
 # 사용:
-#   deploy.sh <repo> <commit> <team> <subdomain> [port] [env_json]
+#   deploy.sh <repo> <commit> <team> <subdomain> [port] [env_json] [옵션 플래그]
 #     repo      : fursys-group-hub/<name>
 #     commit    : git rev-parse HEAD 값
 #     team      : creatable_teams 중 하나 (예: iloom-hub)
@@ -13,6 +13,17 @@
 #     env_json  : (선택) env_vars 배열 JSON. 예) '[{"key":"GREETING","value":"hi","class":"runtime"}]'
 #                 표준입력(stdin)으로도 받는다(인자보다 stdin 우선). 시크릿 값이 인자에 안 남게 stdin 권장.
 #
+#   멀티서비스 옵션 플래그 (선택 — 안 주면 단일배포와 100% 동일):
+#     --service <name>          : 이 호출이 만드는 서비스 이름. 주면 proxy 가 app_id=`{repo}-{name}`.
+#     --base-dir <dir>          : 빌드 디렉토리(POST /apps 의 base_directory). 예: backend.
+#                                 슬래시 없이 줘도 proxy 가 "/backend" 로 정규화한다(Coolify 선행슬래시 요구).
+#     --dockerfile-loc <path>   : base_directory **기준 상대** Dockerfile 경로(dir 을 앞에 붙이지 말 것).
+#                                 보통 생략 → proxy 기본값 "/Dockerfile".
+#     --volumes <json-array>    : (선택, Phase2) 영속 볼륨 마운트 경로 JSON 배열. 예: '["/data"]'.
+#                                 proxy 가 각 경로에 Coolify persistent storage 를 멱등 보장(재배포해도 데이터 유지).
+#   세 플래그를 모두 생략하면 본문에 해당 필드를 넣지 않아 현행 단일배포 호출과 바이트 동일하다.
+#   플래그는 위치 인자(env_json 까지) 뒤에 오며, env_json 은 여전히 stdin 으로 줄 수 있다.
+#
 # 출력(stdout): 첫 줄에 결과 코드, 이후 줄에 부가정보(JSON 등).
 #   결과 코드:
 #     CREATED <app_id> <domain>      생성·배포 시작됨(200)
@@ -20,6 +31,7 @@
 #     DEPLOY_FAILED <app_id>         폴링 중 exited/error/stopped 감지(→ logs.sh 로 해설)
 #     PENDING <app_id> <domain>      폴링 시간초과(아직 진행 중)
 #     ALREADY_EXISTS                 409, error 없음/그 외 → 이미 만든 앱(git push 자동재배포)
+#     PLACEHOLDER_UNRESOLVED         본문에 치환 안 된 ${...} 가 남아 전송 중단(빌드 깨짐 사전 차단)
 #     GATE_NO_VERDICT                409 error=no_verdict (서버 게이트 차단)
 #     GATE_BLOCKED                   409 error=verdict_blocked (서버 게이트 차단)
 #     UNAUTHORIZED                   401
@@ -33,8 +45,20 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 . "$HERE/common.sh"
 
 REPO="${1:-}"; COMMIT="${2:-}"; TEAM="${3:-}"; SUBDOMAIN="${4:-}"; PORT="${5:-}"; ENV_ARG="${6:-}"
+# 위치 인자 6개를 소비한 뒤, 남은 인자에서 멀티서비스 옵션 플래그를 파싱한다.
+[ "$#" -ge 1 ] && shift "$(( $# < 6 ? $# : 6 ))"
+SERVICE=""; BASE_DIR=""; DOCKERFILE_LOC=""; VOLUMES=""
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --service)        SERVICE="${2:-}"; shift 2 ;;
+    --base-dir)       BASE_DIR="${2:-}"; shift 2 ;;
+    --dockerfile-loc) DOCKERFILE_LOC="${2:-}"; shift 2 ;;
+    --volumes)        VOLUMES="${2:-}"; shift 2 ;;
+    *) echo "UNKNOWN_FLAG $1" >&2; shift ;;
+  esac
+done
 if [ -z "$REPO" ] || [ -z "$COMMIT" ] || [ -z "$TEAM" ] || [ -z "$SUBDOMAIN" ]; then
-  echo "USAGE deploy.sh <repo> <commit> <team> <subdomain> [port] [env_json]" >&2
+  echo "USAGE deploy.sh <repo> <commit> <team> <subdomain> [port] [env_json] [--service N] [--base-dir D] [--dockerfile-loc P]" >&2
   exit 2
 fi
 # 포트: 비었으면 3000(next 기본). 숫자만 허용(아니면 3000).
@@ -53,14 +77,29 @@ if ! fdh_load_key; then
   exit 0
 fi
 
-# 요청 본문 구성
-if [ -n "$ENV_JSON" ]; then
-  BODY="$(printf '{"repo":"%s","commit":"%s","team":"%s","subdomain":"%s","port":%s,"env_vars":%s}' \
-    "$REPO" "$COMMIT" "$TEAM" "$SUBDOMAIN" "$PORT" "$ENV_JSON")"
-else
-  BODY="$(printf '{"repo":"%s","commit":"%s","team":"%s","subdomain":"%s","port":%s}' \
-    "$REPO" "$COMMIT" "$TEAM" "$SUBDOMAIN" "$PORT")"
-fi
+# 요청 본문 구성.
+# 항상 들어가는 필드 + 선택 필드(멀티서비스/ env_vars)를 조립한다.
+# 선택 필드는 값이 있을 때만 추가 → 세 멀티서비스 플래그 미전송 시 현행 단일배포 본문과 동일.
+BODY="$(printf '{"repo":"%s","commit":"%s","team":"%s","subdomain":"%s","port":%s' \
+  "$REPO" "$COMMIT" "$TEAM" "$SUBDOMAIN" "$PORT")"
+[ -n "$SERVICE" ]        && BODY="$BODY$(printf ',"service":"%s"' "$SERVICE")"
+[ -n "$BASE_DIR" ]       && BODY="$BODY$(printf ',"base_directory":"%s"' "$BASE_DIR")"
+[ -n "$DOCKERFILE_LOC" ] && BODY="$BODY$(printf ',"dockerfile_location":"%s"' "$DOCKERFILE_LOC")"
+[ -n "$VOLUMES" ]        && BODY="$BODY$(printf ',"volumes":%s' "$VOLUMES")"
+[ -n "$ENV_JSON" ]       && BODY="$BODY$(printf ',"env_vars":%s' "$ENV_JSON")"
+BODY="$BODY}"
+
+# 미치환 placeholder 잔류 가드 (멀티서비스 cross-URL 치환 누락 사전 차단).
+# 치환은 deploy 스킬이 본문 조립 전에 끝내야 하나, 누락 시 리터럴 `${api.url}` 등이
+# 빌드 ARG 로 들어가 빌드/런타임이 조용히 깨진다. 본문에 `${` 가 하나라도 남아 있으면
+# POST 를 하지 않고 PLACEHOLDER_UNRESOLVED 로 즉시 중단한다(값은 출력하지 않는다 — 키/시크릿 비노출).
+# `${` 가 없으면(단일배포·placeholder 없는 멀티서비스 포함) 가드는 발동하지 않는다 → 현행과 동일.
+case "$BODY" in
+  *'${'*)
+    echo "PLACEHOLDER_UNRESOLVED"
+    exit 0
+    ;;
+esac
 
 RESP="$(curl -sS -w $'\n%{http_code}' -X POST "$PROXY_URL/apps" \
   -H "X-Proxy-Key: $KEY" -H "Content-Type: application/json" \

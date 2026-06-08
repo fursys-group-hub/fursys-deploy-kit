@@ -55,6 +55,16 @@ fdh-engine "<대상경로>" --json --no-prompt
 6. 프레임워크 배포 요건: `references/framework-rules.md` 의 감지된 프레임워크 **② 사내 서버 배포 요건** + §8 공통 Dockerfile 점검.
 - **배포가능 축 판정(deploy-readiness §7):** 1번 치명(없음) 또는 2·3·4번 높음 중 하나라도 → **불가**. 결정적 항목 모두 통과 → **가능**. 5·6의 경고는 권고일 뿐 막지 않음.
 
+## 4-1) 여러 부분으로 나뉜 앱인지 감지 + 목록 만들기 (멀티서비스 — 해당될 때만)
+배포 가능성 점검 중, 이 프로젝트가 **여러 부분(앱 N개)** 으로 올라가야 하는지 본다. 빠른 감지:
+```bash
+ls -1 */Dockerfile **/Dockerfile 2>/dev/null   # 서브디렉터리 Dockerfile 복수?
+ls -1 docker-compose.yml compose.yaml 2>/dev/null  # compose 있나(구조 힌트로만, 배포엔 미사용)
+```
+- **서브디렉터리 Dockerfile 이 둘 이상**, 또는 **compose 에 서비스가 2개 이상**이면 → "여러 부분으로 나뉜 앱"으로 보고 `references/multiservice-detect.md` 를 읽어 따른다(감지·필드 채우기·사용자 확인·`.fursys-deploy-hub/services.json` 생성·`.gitignore` 안내). 사용자에게는 쉬운 우리말로만 확인한다("이 앱은 화면(web)과 기능(api) 두 부분으로 보여요. 기능을 먼저 올리고 화면을 나중에 올려요. 맞나요?"). cross-URL 은 `${<svc>.url}` placeholder 그대로 적고 **여기서 실제 주소로 치환하지 않는다**(배포 때 치환).
+- **그 외(루트 Dockerfile 1개뿐)** → 단일서비스. **매니페스트를 만들지 않는다**(현행 단일배포 유지). 이 단계는 건너뛴다.
+- 이 단계는 보안/배포가능 축 판정을 바꾸지 않는다(목록 생성만). 게이트(`last-verdict.json`·`/verdict`)는 멀티서비스여도 **repo 단위 1건** 그대로다(서비스별 검토 아님).
+
 ## 5) 종합 판정
 - **보안** = 통과 / 주의 / 차단 (3번 결과)
 - **배포가능** = 가능 / 불가 (4번 결과)

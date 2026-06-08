@@ -29,23 +29,24 @@ ls -la Dockerfile Dockerfile.* 2>/dev/null || echo NO_DOCKERFILE
 - **있음** → 통과(이 항목).
 - **없음** → 배포가능 = **불가(치명)**. 화면 문구: "이 프로젝트엔 **Dockerfile(도커 설정)이 없어 지금은 배포할 수 없습니다.**"
 
-### 불허 형태 (사내 정책 — Dockerfile만 허용)
-다음만 있고 Dockerfile이 없으면 **배포 불가**다:
-- Docker Compose (`docker-compose.yml`, `compose.yaml`) — 사내 서버는 **단일 서비스 컨테이너** 단위 배포 기준
-- Nixpacks 자동 감지(`nixpacks.toml` 만)
-- Heroku Buildpacks(`Procfile`, `runtime.txt` 만)
-- 정적 사이트 자동 빌드
+### 빌드 방식 — Dockerfile 필수 (단일 **또는** 멀티서비스 둘 다 지원)
+사내 서버는 **Dockerfile 로 컨테이너를 빌드**한다(빌드팩 자동감지 불가). 두 형태를 지원한다:
+- **단일 서비스**: 레포 루트 `Dockerfile` 1개 → 앱 1개.
+- **멀티서비스(여러 부분)**: 서브디렉터리마다 Dockerfile(예: `frontend/Dockerfile` + `backend/Dockerfile`) → 배포 전 검토가 감지해 `.fursys-deploy-hub/services.json` 을 만들고, 배포 시 **한 repo 를 앱 N개로** 올린다(`multiservice-detect.md`). docker-compose 는 **구조 힌트로만** 읽고 배포엔 쓰지 않는다.
 
-**이유(요약 — security-checklist §3.5):** 빌드·런타임 환경을 명시적으로 통제하지 못하면 ODBC 드라이버·사내 CA 인증서·non-root 사용자·기업 프록시 같은 사내 운영 요구사항을 일관되게 적용할 수 없다. 사내 서버는 단일 컨테이너 단위로 배포하므로 Dockerfile만 허용한다. 다중 서비스가 필요하면 서비스별로 별도 프로젝트(각각 Dockerfile 보유)로 분리해 개별 등록한다.
+다음만 있고 **Dockerfile 이 (루트에도 서브디렉터리에도) 하나도 없으면** 배포 불가(치명):
+- Nixpacks(`nixpacks.toml` 만) / Heroku Buildpacks(`Procfile` 만) / 정적 사이트 자동빌드 / Compose 만 있고 빌드할 Dockerfile 이 없음
 
-### Compose만 있는 경우 안내
-`docker-compose.yml` 만 있고 Dockerfile이 없으면: "Compose 대신 **Dockerfile로 전환**이 필요합니다. 아래 복붙 프롬프트로 AI에게 표준 Dockerfile을 만들어 달라고 하세요." (프레임워크별 표준 Dockerfile 생성 프롬프트는 `framework-rules.md` 의 해당 스택 ② 사내 서버 배포 요건을 근거로 작성)
-(Dockerfile과 Compose가 둘 다 있으면 Dockerfile 기준으로 진행, Compose는 참고만.)
+**이유(요약 — security-checklist §3.5):** 빌드·런타임 환경을 명시 통제하지 못하면 ODBC 드라이버·사내 CA·non-root 사용자·기업 프록시 같은 사내 요구사항을 일관 적용할 수 없다. **멀티서비스는 "별도 프로젝트로 분리"가 아니라 한 repo 안에서 서비스별 Dockerfile + 매니페스트로** 처리한다(플랫폼이 N개 앱으로 배포).
+
+### Dockerfile 이 하나도 없을 때 안내
+"배포하려면 **Dockerfile(도커 설정)이 필요합니다.** 아래 복붙 프롬프트로 표준 Dockerfile 을 만들어 달라고 하세요." (프레임워크별 표준은 `framework-rules.md`.) Compose 만 있으면 각 서비스 폴더에 Dockerfile 을 만들면 멀티서비스로 배포된다. (루트 Dockerfile 과 서브디렉터리 Dockerfile 이 함께 있으면, 멀티서비스 감지 규칙(`multiservice-detect.md`)으로 판단.)
 
 ### Dockerfile **내용** 함정 점검 (Node/npm 계열 — 빌드가 깨지는 정적-미탐 유형)
 Dockerfile 이 **있어도** 내용 때문에 배포 빌드가 깨지는 두 유형은 이 검토(빌드 미실행)로는 놓치기 쉽다. Node 계열(Next.js·NestJS 등)이면 반드시 확인한다(상세·grep·정준 골격은 `framework-rules.md` Next.js ②-1/②-2):
 - **빌드 단계 `NODE_ENV=production` →** `devDependencies`(tailwind·typescript 등) 스킵으로 `npm run build` 실패. `ENV NODE_ENV=production` 은 runner 에만.
 - **`NEXT_PUBLIC_*`/`VITE_*` 빌드 인자 미선언 →** `ARG` 없으면 build-arg 가 무시되어 `undefined` 로 번들에 인라인(빌드는 통과, 런타임 깨짐). 코드가 쓰는 공개 변수마다 builder 에 `ARG`+`ENV` 필요.
+- **non-root + 볼륨 경로 미준비 →** 앱이 `USER`(non-root)로 돌고 영속 볼륨(`services.json` 의 `volumes`, 예 `/data`)을 쓰는데, Dockerfile 이 `USER` 전에 그 경로를 `mkdir -p` + `chown` 하지 않으면, 볼륨이 **root 소유**로 마운트돼 컨테이너 사용자가 못 써 **배포 후 권한 에러로 크래시**(예: `PermissionError: '/data'`). 볼륨 경로가 있으면 Dockerfile 에 `RUN mkdir -p <경로> && chown <user> <경로>` 가 `USER` **앞**에 있는지 확인 → 없으면 **높음**. (빈 볼륨 첫 마운트 시 이미지의 그 경로 소유권이 복사되므로 이렇게 하면 해결.)
 
 ---
 
