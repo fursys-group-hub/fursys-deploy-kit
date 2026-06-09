@@ -26,11 +26,13 @@
 #
 # 출력(stdout): 첫 줄에 결과 코드, 이후 줄에 부가정보(JSON 등).
 #   결과 코드:
-#     CREATED <app_id> <domain>      생성·배포 시작됨(200)
+#     CREATED <app_id> <domain>      생성·배포 시작됨(200, redeployed 없음)
+#     REDEPLOYED <app_id> <domain>   본인 앱 재배포 시작됨(200 redeployed:true) — CREATED 와 동일 폴링
 #     RUNNING <app_id> <domain>      폴링 결과 정상 기동 확인
 #     DEPLOY_FAILED <app_id>         폴링 중 exited/error/stopped 감지(→ logs.sh 로 해설)
 #     PENDING <app_id> <domain>      폴링 시간초과(아직 진행 중)
-#     ALREADY_EXISTS                 409, error 없음/그 외 → 이미 만든 앱(git push 자동재배포)
+#     NAME_TAKEN                     409 error=name_taken → 그 이름(app_id)이 타인 소유(남의 앱 재배포 금지)
+#     ALREADY_EXISTS                 409, error 없음/그 외 → 하위호환 잔존(정상 재시도엔 더 이상 안 옴)
 #     PLACEHOLDER_UNRESOLVED         본문에 치환 안 된 ${...} 가 남아 전송 중단(빌드 깨짐 사전 차단)
 #     GATE_NO_VERDICT                409 error=no_verdict (서버 게이트 차단)
 #     GATE_BLOCKED                   409 error=verdict_blocked (서버 게이트 차단)
@@ -113,9 +115,12 @@ case "$HTTP" in
   200)
     APP_ID="$(extract app_id)"
     DOMAIN="$(extract domain)"
-    echo "CREATED $APP_ID $DOMAIN"
+    # redeployed 는 boolean 이라 문자열 extract 헬퍼가 못 잡는다 → 별도 판정.
+    # true 면 본인 앱 재배포(기존 앱 재시도), 없으면 최초 생성.
+    REDEPLOYED="$(printf '%s' "$JSON" | grep -oE '"redeployed"[[:space:]]*:[[:space:]]*true' | head -n1)"
+    if [ -n "$REDEPLOYED" ]; then echo "REDEPLOYED $APP_ID $DOMAIN"; else echo "CREATED $APP_ID $DOMAIN"; fi
     printf '%s\n' "$JSON"
-    # 상태 폴링: 약 10초 간격, 최대 ~10분(60회)
+    # 상태 폴링: 약 10초 간격, 최대 ~10분(60회). CREATED/REDEPLOYED 공통(RUNNING/DEPLOY_FAILED/PENDING 동일 emit).
     for _ in $(seq 1 60); do
       sleep 10
       SRESP="$(curl -sS "$PROXY_URL/apps/$APP_ID/status" -H "X-Proxy-Key: $KEY" 2>/dev/null || true)"
@@ -134,7 +139,8 @@ case "$HTTP" in
     case "$ERR" in
       no_verdict) echo "GATE_NO_VERDICT" ;;
       verdict_blocked) echo "GATE_BLOCKED" ;;
-      *) echo "ALREADY_EXISTS" ;;
+      name_taken) echo "NAME_TAKEN" ;;
+      *) echo "ALREADY_EXISTS" ;;   # 하위호환 잔존(정상 재시도엔 더 이상 안 옴)
     esac
     printf '%s\n' "$JSON"
     ;;
