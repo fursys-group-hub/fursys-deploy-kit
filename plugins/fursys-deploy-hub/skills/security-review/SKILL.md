@@ -108,20 +108,34 @@ ls -1 docker-compose.yml compose.yaml 2>/dev/null  # compose 있나(구조 힌�
   ```
   스크립트 결과 코드: `STORED`(성공, 조용히 6단계로) / `NO_KEY`(키 없음 → 위 건너뜀 안내) / `NO_COMMIT`(commit 없음 → 등록 생략, 커밋·푸시 후 배포 시 등록됨을 안내) / `UNAUTHORIZED`(키 무효 → 위 401 안내, 검사 차단 안 함) / `UPLOAD_FAILED <code>`(연결 문제 → 위 실패 안내, 배포 때 재시도). 어느 경우든 6단계(HTML 리포트)는 반드시 만든다. (`$CLAUDE_PLUGIN_ROOT` 가 안 잡히면 스킬 폴더의 `scripts/verdict-upload.sh` 절대경로로 실행한다.)
 
-## 6) HTML 리포트 생성 (템플릿 채우기 — 토큰 절감)
-**CSS·레이아웃을 매번 새로 생성하지 않는다.** 대신 번들된 `assets/report-template.html` 을 Read 해서 **`{{...}}` placeholder 만 값/해석으로 치환**하고, 대상 경로 하위 `.fursys-deploy-hub/security-report-<YYYYMMDD-HHMM>.html` 로 저장한다. (CSS·구조 재생성 금지 = 이렇게 해야 출력 토큰이 크게 준다.) JSON 값 + 심화 결과로 채우되 비개발자가 읽도록 한글로 해석한다. **HTML 리포트 본체는 배포 시스템에 올리지 않는다 — 로컬 HTML 파일까지만.**(구조화 검토 결과 등록은 5-2에서 이미 처리했다.)
+## 6) HTML 리포트 생성 (조각만 만들고 스크립트가 조립 — 토큰 절감)
+**템플릿(CSS·레이아웃·17KB) 전체를 Read 하거나 다시 출력하지 않는다.** 대신 **동적 조각(placeholder 값)만** 담은 작은 values 파일을 Write 하고, 번들 스크립트 `scripts/render-report.sh` 가 템플릿의 `{{KEY}}` 자리에 끼워넣어 완성 HTML을 만든다. (= 템플릿 boilerplate를 LLM이 다시 토해내지 않으므로 출력 토큰이 크게 준다. 완성물은 예전 방식과 **동일**하다 — 템플릿 바이트는 손대지 않는다.) 조각은 JSON 값 + 심화 결과로 채우되 비개발자가 읽도록 한글로 해석한다. **HTML 리포트 본체는 배포 시스템에 올리지 않는다 — 로컬 HTML 파일까지만.**(구조화 검토 결과 등록은 5-2에서 이미 처리했다.)
 
-치환할 placeholder(템플릿 상단 주석에 목록·예시 있음):
-- `{{META_PATH}}` — 대상 폴더(`target.path`)·코드 저장소(`target.repo`)·프로젝트 종류(`target.framework`)·검사 일시. (`.meta-item` 4개)
-- `{{SECURITY_BADGE}}` — 보안 결과 배지(통과 초록 `pass`/주의 주황 `caution`/차단 빨강 `blocked`).
-- `{{DEPLOY_BADGE}}` — 배포 준비 배지(완료 초록 `ready`/불가 빨강 `notready`).
-- `{{FINAL_LINE}}` — 최종 한 줄(✅ 배포 가능 / ❌ 배포 불가 — 사유).
-- `{{SUMMARY_CARDS}}` — `summary` 의 치명/높음/중간/낮음 카운트 카드 4개.
-- `{{SECURITY_FINDINGS_ROWS}}` — 보안 문제 표 행(엔진 findings + LLM 심화). `inGitHistory:true` 행은 `class="git-warn"` + 경고 문구.
-- `{{SECURITY_PROMPTS}}` — `aiPrompt` 있는 치명/높음 항목마다 복붙 프롬프트 카드(검은 코드블록).
-- `{{DEPLOY_CHECK_ROWS}}` — Dockerfile/포트/시작 방법/필수 설정값/상태점검 ✅·❌·➖ 행.
-- `{{DEPLOY_PROMPTS}}` — 배포 준비 문제 시 복붙 프롬프트(예: 프레임워크별 Dockerfile 생성). 없으면 비움.
-- `{{ENV_ROWS}}` — `envVars` 설정값 정리표(이름·다루는 방법·설명).
+**① values 파일을 Write 한다** — 각 placeholder 블록을 `@@@FDH:KEY@@@` 구분선으로 나눈다(HTML 특수문자 escape 불필요, 여러 줄 가능). 경로는 `.fursys-deploy-hub/_render-values.txt` 권장.
+- **문제가 없어 비울 placeholder(예: 프롬프트 없음)도 구분선은 넣고 내용만 비운다** — 그래야 토큰이 빈 값으로 치환된다(구분선 자체를 빠뜨리면 `{{KEY}}` 가 그대로 남는다).
+- 끝에 `@@@FDH:END@@@` 를 둔다.
+
+각 placeholder에 채울 조각(예시 — 클래스·구조 그대로 쓸 것):
+- `META_PATH` — `target.path`·`target.repo`·`target.framework`·검사일시 4개. 예: `<div class="meta-item"><dt>대상 폴더</dt><dd><code>...</code></dd></div>`
+- `SECURITY_BADGE` — 통과=`pass`(초록)/주의=`caution`(주황)/차단=`blocked`(빨강). 예: `<div class="status-badge pass"><span class="tag">보안</span> 통과</div>`
+- `DEPLOY_BADGE` — 완료=`ready`(초록)/불가=`notready`(빨강). 예: `<div class="status-badge ready"><span class="tag">배포 준비</span> 완료</div>`
+- `FINAL_LINE` — 최종 한 줄 텍스트(✅ 배포 가능합니다 / ❌ 배포 불가 — 사유). 태그 없이 텍스트만.
+- `SUMMARY_CARDS` — `summary` 치명/높음/중간/낮음 카드 4개. 예: `<div class="count-card critical"><div class="n">1</div><div class="l">치명</div></div>` (high/medium/low 동일 패턴).
+- `SECURITY_FINDINGS_ROWS` — 보안 문제 표 행(엔진 findings + LLM 심화). 예: `<tr><td><span class="badge badge-critical">치명</span></td><td><code>src/x.ts:12</code></td><td>하드코딩된 키</td><td>...</td></tr>`. 위치 없으면 `-`. `inGitHistory:true` 행은 `<tr class="git-warn">` + 설명 끝에 `<span class="git-note">기록(git 이력)에 남음</span> — ...반드시 폐기·재발급 하고 IT본부에 알리세요.`
+- `SECURITY_PROMPTS` — `aiPrompt` 있는 치명/높음마다 카드. 예: `<div class="prompt-card"><div class="ph"><span class="badge badge-critical">치명</span><h3>...</h3></div><p class="desc">아래 글을 그대로 복사해 AI 도구에 붙여넣으면 고쳐줍니다.</p><pre>{aiPrompt 전문}</pre><p class="prompt-hint">복사 → AI 도구에 붙여넣기</p></div>`. 없으면 빈 블록.
+- `DEPLOY_CHECK_ROWS` — Dockerfile/포트/시작 방법/필수 설정값/상태점검. 예: `<tr><td>Dockerfile</td><td><span class="check-ok">✅</span></td><td>...</td></tr>` (`check-no`=❌, `check-skip`=➖).
+- `DEPLOY_PROMPTS` — 배포 준비 문제 시 복붙 프롬프트 카드(`SECURITY_PROMPTS` 와 동일 구조). 없으면 빈 블록.
+- `ENV_ROWS` — `envVars` 정리표. 다루는 방법은 한글로: `build`→"화면(브라우저)에 포함될 수 있음 → 비밀번호·키 넣지 말 것", `runtime`→"서버에서만 쓰는 일반 값", `locked`→"비밀번호·키 → 안전하게 잠가서 보관(화면 노출 금지)". 예: `<tr><td><code>DB_PASSWORD</code></td><td>비밀번호·키 → 안전하게 잠가서 보관(화면 노출 금지)</td><td>...</td></tr>`
+
+**② 스크립트로 조립한다** — 출력은 대상 경로 하위 `.fursys-deploy-hub/security-report-<YYYYMMDD-HHMM>.html`.
+```bash
+TS=$(date '+%Y%m%d-%H%M')
+"$CLAUDE_PLUGIN_ROOT/skills/security-review/scripts/render-report.sh" \
+  ".fursys-deploy-hub/_render-values.txt" \
+  ".fursys-deploy-hub/security-report-${TS}.html"
+```
+- 첫 줄이 `RENDERED <경로>` 면 성공 — 그 경로를 7단계에서 안내한다. `NO_VALUES`/`NO_TEMPLATE` 면 원인을 알리고 멈춘다(임의로 HTML을 손으로 쓰지 말 것). (`$CLAUDE_PLUGIN_ROOT` 가 안 잡히면 스킬 폴더의 절대경로로 실행.)
+- `last-verdict.json`(5-1)의 `report` 필드에 이 HTML 경로를 적는다.
 
 리포트 구성(템플릿이 이미 이 순서·스타일로 짜여 있다 — 각 placeholder에 아래 의미를 채운다. CSS/구조는 손대지 않는다):
 

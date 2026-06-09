@@ -45,7 +45,10 @@ git status --porcelain
   git push -u origin HEAD
   ```
 - repo 식별자는 `fursys-group-hub/<레포이름>` 으로 확정한다(`deploy.sh` 의 `repo` 인자).
-- git 원격이 아예 없으면: "먼저 회사 GitHub(`fursys-group-hub`)에 이 코드를 올려야 해요. IT본부에 문의하세요." 라고 안내하고 멈춘다.
+- git 원격이 아예 없으면: "먼저 회사 GitHub(`fursys-group-hub`)에 이 코드를 올려야 해요." 라고 안내하고 멈춘다. 아래 안내도 함께 전한다(GitHub 연결이 안 돼 있으면 배포가 진행되지 않는 건 정상이며, 아래 가이드를 참고하면 직접 해결할 수 있다고 알린다):
+  > "GitHub에 코드가 올라가 있어야 배포할 수 있어요. 아직 안 돼 있으면 아래 가이드를 참고해주세요.
+  > - 사내 GitHub 가입 방법: https://ai-library.hub.fursys.com/guides/github-signup
+  > - 내 코드를 GitHub에 올리는 방법: https://ai-library.hub.fursys.com/guides/push"
 
 **배포 전 빠른 확인 — Dockerfile:** 배포는 프로젝트 루트의 `Dockerfile` 로만 이뤄진다(없으면 배포가 **반드시 실패**한다). 배포 준비 여부는 ⑤ 검토 게이트가 정식으로 보지만, 검토를 안 돌린 사용자를 위한 **빠른 실패용**으로 여기서도 한 번 본다(실패→재시도→중복 생성 악순환 방지).
 ```bash
@@ -93,7 +96,8 @@ test -f .fursys-deploy-hub/services.json && echo HAS_MANIFEST || echo NO_MANIFES
    - 포트: Dockerfile 의 `EXPOSE` 값, 없으면 `3000`
    - `NEXT_PUBLIC_*` / `VITE_*` → 빌드 포함 값(`build`)으로, 그 외는 일반 실행값(`runtime`)으로 **자동 분류**(사용자에게 "build냐 runtime이냐"를 묻지 않는다). 비밀번호·키류는 `locked`.
    - 로컬 `.env` 에 이미 있는 값 → 그대로 사용
-3. **fgdw(사내 DB) 사용 시:** 접속 계정/비밀번호는 **넣지 않아도 된다.** 프록시가 배포 시 사내 공용 계정으로 자동 치환한다. (`FGDW_DB_HOST/PORT/NAME` 정도만 있으면 되고 USER/PASSWORD는 비워둬도 됨.) 비밀번호를 화면에 노출하지 않는다.
+3. **fgdw(사내 DB) 사용 시:** 접속 계정/비밀번호는 **넣지 않아도 된다.** 프록시가 배포 시 사내 공용 계정으로 자동 채운다. (호스트·DB이름 같은 주소값은 **사용자가 쓴 이름 그대로** 두고, 계정·비밀번호에 해당하는 값만 비워 보낸다. 변수 이름을 정해진 표준으로 바꿀 필요는 없다.) 비밀번호를 화면에 노출하지 않는다.
+   - (내부 지침) 비워 보내는 계정/비번 item 에 역할 태그 `fgdw_role:"user"`/`"password"` 를 달아야 프록시가 키 이름·값과 무관하게 공용계정으로 치환한다. 표준이름·연결문자열 케이스는 태그 없이도 프록시 폴백이 처리. 상세·판정기준은 `references/env-resolve.md` §2.3.
 4. **빠진 비밀·키 — 자동생성과 질문을 구분한다(`references/env-resolve.md` 규칙, 모든 앱 공통):**
    - **앱 내부 보안 키**(이름이 `JWT_SECRET*`·`SESSION_SECRET`·`SECRET_KEY`·`*_SALT`·`NEXTAUTH_SECRET`·`ENCRYPTION_KEY` 등 — 사람이 정할 값이 아닌 난수) → `scripts/gen-secret.sh` 로 **자동 생성**해 넣는다(`class=locked`). 사용자에겐 "보안 키는 자동으로 안전하게 만들어 넣었어요"만 알리고 **묻지 않는다**(값 미출력).
    - **사람이 정하는 값**(`ADMIN_PASSWORD` 등 관리자 비번)·**외부 서비스 자격증명**(`*_API_KEY`/`*_TOKEN`/사외 `*_PASSWORD`) → 그때만 한 개씩 쉽게 묻는다:

@@ -47,7 +47,7 @@ test -f .fursys-deploy-hub/services.json && cat .fursys-deploy-hub/services.json
 치환 후 env_vars 배열을 만든다(단일배포 ④의 분류 규칙과 동일선):
 - `build_env` 의 각 항목 → `{ "key":K, "value":V, "class":"build" }`
 - `runtime_env` 의 각 항목 → `{ "key":K, "value":V, "class":"runtime" }`
-- (그 외 `.env`/코드에서 추가로 모은 값은 **`references/env-resolve.md` 규칙을 서비스별로** 적용한다: 앱 내부 난수 보안 키는 `gen-secret.sh` 로 자동생성, 사람·외부 값만 질문, fgdw 는 비워둠(proxy 치환), class 자동 분류(NEXT_PUBLIC_*/VITE_*→build·비밀류→locked·나머지→runtime). **`.env` 없는 서비스**도 그 dir 의 코드에서 필요한 env 를 감지해 같은 규칙으로 채운다.)
+- (그 외 `.env`/코드에서 추가로 모은 값은 **`references/env-resolve.md` 규칙을 서비스별로** 적용한다: 앱 내부 난수 보안 키는 `gen-secret.sh` 로 자동생성, 사람·외부 값만 질문, fgdw 는 비워두고 계정/비번 item 에 역할 태그(`fgdw_role`)를 달아 보냄(proxy 치환 — `env-resolve.md` §2.3, 서비스 dir 별 env set 마다 독립 적용), class 자동 분류(NEXT_PUBLIC_*/VITE_*→build·비밀류→locked·나머지→runtime). **`.env` 없는 서비스**도 그 dir 의 코드에서 필요한 env 를 감지해 같은 규칙으로 채운다.)
 
 ### 5-1. 치환 완료 확인 (빼먹으면 빌드가 조용히 깨진다 — 반드시)
 치환을 끝낸 뒤, 만든 env_vars 배열(과 본문)에 `${...}` 가 **하나도 남아 있지 않은지** 직접 확인한다. 하나라도 남아 있으면(치환을 빠뜨렸거나 매핑을 못 찾은 것) **그 서비스 배포를 진행하지 말고 멈춘다.** 리터럴 `${api.url}` 같은 값이 그대로 들어가면 앱을 만드는 과정에서 주소가 빈 채로 굳어 버려 화면·기능이 깨진다.
