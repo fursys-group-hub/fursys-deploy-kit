@@ -26,9 +26,14 @@
 #
 # 출력(stdout): 첫 줄에 결과 코드, 이후 줄에 부가정보(JSON 등).
 #   결과 코드:
-#     CREATED <app_id> <domain>      생성·배포 시작됨(200, redeployed 없음)
-#     REDEPLOYED <app_id> <domain>   본인 앱 재배포 시작됨(200 redeployed:true) — CREATED 와 동일 폴링
-#     RUNNING <app_id> <domain>      폴링 결과 정상 기동 확인
+#     CREATED <app_id> <domain>          생성·배포 시작됨(200, 최초 생성) — 폴링
+#     REDEPLOY_WEBHOOK <app_id> <domain> 본인 기존앱, 서버가 다시 배포 안 함(200 status:unchanged,
+#                                        deploy_triggered:false) — 폴링하지 않음. git push 가 자동 재배포.
+#     REDEPLOYED <app_id> <domain>       고아 자가복구로 새로 만듦(200 redeployed:true, deploy_triggered:true)
+#                                        — CREATED 와 동일 폴링
+#     RUNNING <app_id> <https_url>  폴링 결과 정상 기동 확인(주소는 https 로 정규화해 출력)
+#     LIVE_OK <https_url> <code>     기동 후 https 로 실제 응답 확인됨(2xx/3xx) — 바로 접속 가능
+#     LIVE_PENDING <https_url> <code> 기동은 됐으나 https 첫 응답이 아직(앱 예열 중일 수 있음 → 잠시 후 접속)
 #     DEPLOY_FAILED <app_id>         폴링 중 exited/error/stopped 감지(→ logs.sh 로 해설)
 #     PENDING <app_id> <domain>      폴링 시간초과(아직 진행 중)
 #     NAME_TAKEN                     409 error=name_taken → 그 이름(app_id)이 타인 소유(남의 앱 재배포 금지)
@@ -115,18 +120,47 @@ case "$HTTP" in
   200)
     APP_ID="$(extract app_id)"
     DOMAIN="$(extract domain)"
-    # redeployed 는 boolean 이라 문자열 extract 헬퍼가 못 잡는다 → 별도 판정.
-    # true 면 본인 앱 재배포(기존 앱 재시도), 없으면 최초 생성.
+    # boolean/특정문자열은 문자열 extract 헬퍼가 못 잡으니 별도 판정.
+    #   deploy_triggered:false → 이번 호출에서 서버가 deploy 를 안 했다(이중배포 가드, status:unchanged).
+    #                            git push webhook 이 재배포하므로 폴링하지 않는다.
+    #   redeployed:true        → (deploy_triggered:false 가 아니면) 고아 자가복구로 새로 만듦 → CREATED 와 동일 폴링.
+    #   둘 다 아님              → 최초 생성(CREATED).
+    DT_FALSE="$(printf '%s' "$JSON" | grep -oE '"deploy_triggered"[[:space:]]*:[[:space:]]*false' | head -n1)"
     REDEPLOYED="$(printf '%s' "$JSON" | grep -oE '"redeployed"[[:space:]]*:[[:space:]]*true' | head -n1)"
+    if [ -n "$DT_FALSE" ]; then
+      # (b) 정상 경로: 서버가 deploy 안 함(중복 배포 방지). 폴링하지 않고 즉시 종료.
+      echo "REDEPLOY_WEBHOOK $APP_ID $DOMAIN"
+      printf '%s\n' "$JSON"
+      exit 0
+    fi
     if [ -n "$REDEPLOYED" ]; then echo "REDEPLOYED $APP_ID $DOMAIN"; else echo "CREATED $APP_ID $DOMAIN"; fi
     printf '%s\n' "$JSON"
     # 상태 폴링: 약 10초 간격, 최대 ~10분(60회). CREATED/REDEPLOYED 공통(RUNNING/DEPLOY_FAILED/PENDING 동일 emit).
+    # REDEPLOY_WEBHOOK 은 위에서 이미 종료해 여기로 오지 않는다.
     for _ in $(seq 1 60); do
       sleep 10
       SRESP="$(curl -sS "$PROXY_URL/apps/$APP_ID/status" -H "X-Proxy-Key: $KEY" 2>/dev/null || true)"
       STATUS="$(printf '%s' "$SRESP" | grep -oE '"status"[[:space:]]*:[[:space:]]*"[^"]*"' | head -n1 | sed -E 's/.*:[[:space:]]*"([^"]*)"/\1/')"
       case "$STATUS" in
-        *running*) echo "RUNNING $APP_ID $DOMAIN"; exit 0 ;;
+        *running*)
+          # T5: 컨테이너가 떴어도 앱이 실제로 응답하는지 https 로 한 번 확인한다.
+          # 앱은 https 로만 서빙되므로(http 는 502 가 난다) 반드시 https 로 정규화해 찍는다.
+          if [ -n "$DOMAIN" ]; then HTTPS_URL="https://${DOMAIN#*://}"; else HTTPS_URL=""; fi
+          echo "RUNNING $APP_ID ${HTTPS_URL:-$DOMAIN}"
+          if [ -n "$HTTPS_URL" ]; then
+            # 앱 예열(첫 응답 지연) 대비 최대 ~30초(6회) 동안 2xx/3xx 를 기다린다. 성공 시 즉시 종료.
+            LIVE_CODE=""
+            for _ in $(seq 1 6); do
+              LIVE_CODE="$(curl -sS -o /dev/null -w '%{http_code}' -L --max-time 10 "$HTTPS_URL" 2>/dev/null || true)"
+              case "$LIVE_CODE" in 2*|3*) break ;; esac
+              sleep 5
+            done
+            case "$LIVE_CODE" in
+              2*|3*) echo "LIVE_OK $HTTPS_URL $LIVE_CODE" ;;
+              *)     echo "LIVE_PENDING $HTTPS_URL ${LIVE_CODE:-000}" ;;
+            esac
+          fi
+          exit 0 ;;
         *exited*|*error*|*stopped*|*failed*) echo "DEPLOY_FAILED $APP_ID"; exit 0 ;;
       esac
     done

@@ -68,7 +68,10 @@ FROM node:20-alpine AS deps
 WORKDIR /app
 COPY package.json package-lock.json* ./
 ENV NODE_ENV=development          # Coolify 가 빌드에 주입하는 NODE_ENV=production 덮어쓰기 → devDeps(tailwind 등) 설치 보장
-RUN npm ci
+# npm ci 가 아니라 npm install: Windows 개발 PC 에서 만든 package-lock.json 은 linux-musl 전용
+# 선택적 네이티브 의존성(@emnapi 등)을 누락해, lock 완전일치를 요구하는 npm ci 가 컨테이너(node:20-alpine)
+# 에서 깨진다. npm install 은 플랫폼에 맞게 보충한다.
+RUN npm install --no-audit --no-fund
 
 # Stage 2: builder
 FROM node:20-alpine AS builder

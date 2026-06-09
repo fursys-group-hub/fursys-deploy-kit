@@ -4,6 +4,23 @@
 # 비밀값(키)은 절대 echo/print 하지 않는다. 함수는 변수에만 담는다.
 set -euo pipefail
 
+# 스크립트 자기 위치 기준 절대경로(T4 폴백의 단일 출처).
+# $CLAUDE_PLUGIN_ROOT 가 안 잡혀도 다른 스크립트(verdict-upload 등) 경로를 이 기준으로 산출한다.
+#   FDH_SCRIPT_DIR : 이 common.sh(= scripts/) 가 있는 절대경로
+#   FDH_PLUGIN_ROOT: 플러그인 루트. $CLAUDE_PLUGIN_ROOT 우선, 없으면 scripts/ 에서 2단계 상위로 폴백.
+FDH_SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+if [ -n "${CLAUDE_PLUGIN_ROOT:-}" ]; then
+  FDH_PLUGIN_ROOT="$CLAUDE_PLUGIN_ROOT"
+else
+  # scripts/ → skills/deploy/ → skills/ → <plugin-root> (3단계 상위)
+  FDH_PLUGIN_ROOT="$(cd "$FDH_SCRIPT_DIR/../../.." && pwd)"
+fi
+export FDH_SCRIPT_DIR FDH_PLUGIN_ROOT
+
+# 같은 deploy 스크립트군(deploy.sh/logs.sh/my-apps.sh/gen-secret.sh)의 절대경로를 돌려준다.
+# 호출부가 $CLAUDE_PLUGIN_ROOT 유무와 무관하게 동작하도록 표준화한 헬퍼.
+fdh_script() { printf '%s/%s' "$FDH_SCRIPT_DIR" "$1"; }
+
 # Windows(git-bash/MSYS2) 경로 자동변환 끄기.
 # MSYS 는 '/' 로 시작하는 인자(예: URL 경로 '/me', '/apps/...')를 Windows 경로
 # (예: 'C:/Program Files/Git/me')로 자동 변환해 curl.exe 요청을 깨뜨릴 수 있다.

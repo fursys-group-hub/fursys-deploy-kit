@@ -3,6 +3,20 @@
 # verdict-upload.sh 가 `source` 한다. 비밀값(키)은 절대 echo 하지 않는다.
 set -euo pipefail
 
+# 스크립트 자기 위치 기준 절대경로(T4 폴백의 단일 출처).
+# $CLAUDE_PLUGIN_ROOT 가 안 잡혀도 같은 스킬의 다른 스크립트(verdict-upload 등) 경로를 이 기준으로 산출한다.
+FDH_SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+if [ -n "${CLAUDE_PLUGIN_ROOT:-}" ]; then
+  FDH_PLUGIN_ROOT="$CLAUDE_PLUGIN_ROOT"
+else
+  # scripts/ → security-review/ → skills/ → <plugin-root> (3단계 상위)
+  FDH_PLUGIN_ROOT="$(cd "$FDH_SCRIPT_DIR/../../.." && pwd)"
+fi
+export FDH_SCRIPT_DIR FDH_PLUGIN_ROOT
+
+# 같은 security-review scripts/ 폴더의 다른 스크립트 절대경로를 돌려준다.
+fdh_script() { printf '%s/%s' "$FDH_SCRIPT_DIR" "$1"; }
+
 # 개인 배포 키 → 전역 KEY. (출력 금지) 없으면 KEY="" + stdout 에 NO_KEY.
 fdh_load_key() {
   KEY="${FURSYS_PROXY_KEY:-}"
