@@ -38,13 +38,17 @@ compose 가 없으면 Dockerfile 위치·각 디렉토리의 코드(프레임워
   - 빌드에 박히는 공개 주소(NEXT_PUBLIC_*/VITE_*)는 build_env, 서버 실행 중 쓰는 값은 runtime_env. 비밀번호·키는 여기 두지 않는다(검토 본문 보안 규칙 그대로).
 - `volumes`: 서비스가 **상태(업로드 파일·SQLite 등)를 저장**하면 그 컨테이너 경로를 배열로 적는다(예: `["/data"]`). docker-compose 의 named volume 마운트(`volumes:` 의 `catalog_data:/data` → `/data`)에서 가져온다. 함께, 그 경로를 가리키는 설정값(예: `UPLOAD_DIR=/data/uploads`)도 compose `environment` 에서 가져와 그 서비스 env 에 넣어야 데이터가 볼륨에 쌓인다. ⚠️ 그 앱이 non-root 로 돌면(Dockerfile `USER ...`) **그 앱 Dockerfile 이 `USER` 전에 마운트 경로를 mkdir+chown** 해야 쓰기 가능하다 — 안 돼 있으면 배포 후 권한 에러로 크래시한다(배포가능성 점검에서 경고).
 
-## 4. 사용자 확인 (쉬운 우리말, 용어 금지)
-매니페스트를 만들기 전에 감지 결과를 쉽게 풀어 확인받는다. 예:
-> "이 앱은 두 부분으로 보여요: **화면(web)** 과 **기능(api)**. 화면이 기능의 주소를 알아야 해서 **기능을 먼저** 올리고 화면을 나중에 올리게 됩니다. 맞나요? (아니면 어떻게 나뉘는지 알려주세요.)"
-- 사용자가 다르다고 하면 그 설명대로 name/dir/depends_on 을 고친다. 영어 용어(service/subdomain/env)는 쓰지 않는다.
+## 4. 자동 판단 + 결과 알림 (확인질문 아님 — 정말 애매할 때만 질문)
+감지·필드(1~3)는 **소스로 AI가 판단한다.** 비개발자에게 "맞나요?"로 되묻지 않는다("정할 수 있는 건 묻지 말고 자동 처리한다" 원칙). 대신 판단 결과를 **쉬운 우리말로 알리기만** 하고 진행한다. 예:
+> "이 앱은 두 부분으로 보여요: **화면** 과 **기능**. 화면이 기능의 주소를 알아야 해서 **기능을 먼저** 올리고 화면을 나중에 올립니다. (코드를 보고 자동으로 정했어요.)"
+- **단, 판단이 정말 애매할 때만 한 가지를 묻는다**(아래 경우에 한해서만 — 그 외엔 묻지 않는다):
+  - 화면(primary) 후보가 둘 이상이거나 하나도 못 정하겠을 때(예: 웹앱처럼 보이는 게 둘),
+  - 또는 순서(의존관계)를 정할 근거가 없을 때(compose `depends_on` 없음 + 프레임워크로도 앞뒤를 못 가림).
+  - 이때만 막힌 **딱 한 가지만** 쉽게 묻는다. 예: "둘 중 사용자가 **직접 접속하는 화면**은 어느 쪽인가요?"
+- 영어 용어(service/subdomain/env)는 쓰지 않는다. 감지가 틀린 것 같다고 사용자가 먼저 알려주면 그 설명대로 name/dir/depends_on 을 고친다.
 
 ## 5. 파일 쓰기 + .gitignore 안내
-확인되면 프로젝트 루트 `.fursys-deploy-hub/services.json` 을 `contracts/service-manifest.schema.json` 형태로 쓴다(version=1).
+판단되면 프로젝트 루트 `.fursys-deploy-hub/services.json` 을 `contracts/service-manifest.schema.json` 형태로 쓴다(version=1).
 ```
 .fursys-deploy-hub/services.json
 ```

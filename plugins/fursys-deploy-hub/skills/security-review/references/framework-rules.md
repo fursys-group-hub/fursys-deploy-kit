@@ -59,7 +59,7 @@
    ```
 
 #### ②-2. 정준(canonical) standalone Dockerfile 골격 (생성·수정 기준)
-> **단일 출처 동기화:** 이 골격은 `create-app` 의 `templates/web-next/Dockerfile`(scaffold 가 출하하는 실제 표준)과 **동일하게 유지**한다. 한쪽을 고치면 다른 쪽도 맞춘다(드리프트 금지). base 이미지는 사내 표준 `node:20-alpine`.
+> **단일 출처 동기화:** 이 골격은 `create-app` 의 `templates/web-next/Dockerfile`(새 프로젝트 생성 시 출하하는 실제 표준)과 **동일하게 유지**한다. 한쪽을 고치면 다른 쪽도 맞춘다(드리프트 금지). base 이미지는 사내 표준 `node:20-alpine`.
 
 Dockerfile 을 새로 만들거나 고칠 때 이 골격을 기준으로 한다(②-1 두 함정을 모두 회피한 형태). `NEXT_PUBLIC_*` ARG 줄은 코드가 실제로 쓰는 변수로 채운다(안 쓰면 생략).
 ```dockerfile

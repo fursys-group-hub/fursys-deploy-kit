@@ -61,7 +61,7 @@ fdh-engine "<대상경로>" --json --no-prompt
 ls -1 */Dockerfile **/Dockerfile 2>/dev/null   # 서브디렉터리 Dockerfile 복수?
 ls -1 docker-compose.yml compose.yaml 2>/dev/null  # compose 있나(구조 힌트로만, 배포엔 미사용)
 ```
-- **서브디렉터리 Dockerfile 이 둘 이상**, 또는 **compose 에 서비스가 2개 이상**이면 → "여러 부분으로 나뉜 앱"으로 보고 `references/multiservice-detect.md` 를 읽어 따른다(감지·필드 채우기·사용자 확인·`.fursys-deploy-hub/services.json` 생성·`.gitignore` 안내). 사용자에게는 쉬운 우리말로만 확인한다("이 앱은 화면(web)과 기능(api) 두 부분으로 보여요. 기능을 먼저 올리고 화면을 나중에 올려요. 맞나요?"). cross-URL 은 `${<svc>.url}` placeholder 그대로 적고 **여기서 실제 주소로 치환하지 않는다**(배포 때 치환).
+- **서브디렉터리 Dockerfile 이 둘 이상**, 또는 **compose 에 서비스가 2개 이상**이면 → "여러 부분으로 나뉜 앱"으로 보고 `references/multiservice-detect.md` 를 읽어 따른다(감지·필드 채우기·사용자 확인·`.fursys-deploy-hub/services.json` 생성·`.gitignore` 안내). 구조·primary·순서는 **소스로 자동 판단한다(사용자에게 "맞나요?"로 되묻지 않는다)** — 판단 결과만 쉬운 우리말로 알린다("이 앱은 화면과 기능 두 부분으로 보여요. 기능을 먼저 올리고 화면을 나중에 올려요. 코드를 보고 자동으로 정했어요."). 단 primary·순서가 **정말 애매할 때만** 막힌 한 가지를 쉽게 묻는다(상세 조건은 `multiservice-detect.md` §4). cross-URL 은 `${<svc>.url}` placeholder 그대로 적고 **여기서 실제 주소로 치환하지 않는다**(배포 때 치환).
 - **그 외(루트 Dockerfile 1개뿐)** → 단일서비스. **매니페스트를 만들지 않는다**(현행 단일배포 유지). 이 단계는 건너뛴다.
 - 이 단계는 보안/배포가능 축 판정을 바꾸지 않는다(목록 생성만). 게이트(`last-verdict.json`·`/verdict`)는 멀티서비스여도 **repo 단위 1건** 그대로다(서비스별 검토 아님).
 

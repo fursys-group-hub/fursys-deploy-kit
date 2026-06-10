@@ -12,12 +12,12 @@ kit/
     ├─ .claude-plugin/plugin.json           플러그인 매니페스트
     ├─ bin/fdh-engine                        번들된 0토큰 보안 엔진 (플러그인 활성화 시 PATH 자동 등록)
     ├─ commands/                             확정적 슬래시 커맨드 입구
-    │   ├─ new-project.md                    /new-project → scaffold 스킬
+    │   ├─ create-app.md                     /create-app → create-app 스킬
     │   ├─ deploy-check.md                   /deploy-check → security-review 스킬
     │   ├─ deploy.md                         /deploy → deploy 스킬
     │   └─ my-apps.md                        /my-apps → deploy 스킬의 my-apps.sh
     └─ skills/
-        ├─ scaffold/                         새 프로젝트 만들기 (scripts/scaffold.sh)
+        ├─ create-app/                       새 프로젝트 만들기 (scripts/create-app.sh)
         ├─ security-review/                  배포 전 검토 (엔진 + scripts/verdict-upload.sh)
         └─ deploy/                           최초 배포 (scripts/deploy.sh·logs.sh·my-apps.sh, references/)
 ```

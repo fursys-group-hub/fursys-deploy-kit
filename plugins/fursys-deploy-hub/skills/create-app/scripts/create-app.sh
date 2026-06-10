@@ -3,7 +3,7 @@
 # 대화형(옵션 없는) 실행은 비-TTY 셸에서 ERR_TTY_INIT_FAILED 로 크래시하므로 절대 금지.
 # 이 스크립트는 항상 --type 과 fgdw 플래그를 모두 받아 비대화로 실행한다.
 #
-# 사용: scaffold.sh <name> <type> <fgdw_flag>
+# 사용: create-app.sh <name> <type> <fgdw_flag>
 #   name      : 프로젝트 이름 (영문 소문자·하이픈, 예: iloom-event)
 #   type      : web-next | data-fastapi | dashboard-vite
 #   fgdw_flag : --fgdw | --no-fgdw
@@ -17,7 +17,7 @@ set -uo pipefail
 
 NAME="${1:-}"; TYPE="${2:-}"; FGDW="${3:-}"
 if [ -z "$NAME" ] || [ -z "$TYPE" ] || [ -z "$FGDW" ]; then
-  echo "USAGE scaffold.sh <name> <web-next|data-fastapi|dashboard-vite> <--fgdw|--no-fgdw>" >&2
+  echo "USAGE create-app.sh <name> <web-next|data-fastapi|dashboard-vite> <--fgdw|--no-fgdw>" >&2
   exit 2
 fi
 
