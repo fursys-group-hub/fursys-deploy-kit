@@ -75,6 +75,9 @@ ls -1 docker-compose.yml compose.yaml 2>/dev/null  # compose 있나(구조 힌�
 - commit/날짜는 Bash로 얻는다:
   ```bash
   COMMIT=$(git rev-parse HEAD 2>/dev/null || echo null)
+  # repo 기본 브랜치(deploy 가 이 브랜치로 올린다 — main 가정 금지, master 등 그대로):
+  BRANCH=$(git symbolic-ref --short refs/remotes/origin/HEAD 2>/dev/null | sed 's@^origin/@@')
+  [ -z "$BRANCH" ] && BRANCH=$(git rev-parse --abbrev-ref HEAD 2>/dev/null); [ -z "$BRANCH" ] && BRANCH=main
   NOW=$(date '+%Y-%m-%d %H:%M')
   ```
 - `final` = (보안 != 차단) AND (배포가능 == 가능) ? `"ok"` : `"blocked"`.
@@ -82,14 +85,20 @@ ls -1 docker-compose.yml compose.yaml 2>/dev/null  # compose 있나(구조 힌�
   ```json
   {
     "commit": "<COMMIT, 없으면 null>",
+    "branch": "<BRANCH, repo 기본 브랜치>",
     "security": "pass|caution|blocked",
     "deployable": true,
     "final": "ok|blocked",
     "report": "<6단계에서 만든 html 상대경로>",
-    "generated_at": "<NOW>"
+    "generated_at": "<NOW>",
+    "env_plan": [
+      { "name": "<설정값 이름>", "class": "build|runtime|locked", "note": "fgdw|secret-gen|ask|public-url|''" }
+    ]
   }
   ```
   - `security` = 보안 축 결과(통과=`pass`/주의=`caution`/차단=`blocked`), `deployable` = 배포가능 축(가능=`true`/불가=`false`).
+  - **`env_plan` = 엔진 `envVars`(name·class) + 4)·심화에서 파악한 처리 메모.** 배포 단계가 코드를 다시 안 뒤지도록 **여기서 미리 채운다**(속도). `note` 규칙: fgdw 계정/비번=`fgdw`(배포 시 공용계정 자동치환), 난수 자동생성 대상(JWT_SECRET 등)=`secret-gen`, 사람이 정할 값/외부 자격증명=`ask`, NEXT_PUBLIC_*·VITE_* 공개주소=`public-url`, 그 외 일반값=`''`. 분류 기준은 `references/env-resolve.md`(deploy 와 동일 규칙)와 owasp/framework 점검 결과를 그대로 반영한다.
+  - `branch` 도 함께 적어, deploy 가 브랜치를 재확인하지 않게 한다(deploy.sh 가 자체 해석도 하지만 기록을 남긴다).
 
 ## 5-2) 검토 결과를 배포 시스템에 등록 (구조화 데이터 업로드 — 서버 배포 게이트 입력)
 `last-verdict.json`(5-1) 기록 직후, **검토 결과를 사내 배포 시스템에 구조화 형태로 등록**한다. 이 등록 기록이 배포 단계의 **진짜 게이트**다 — 등록된 검토를 통과한 코드만 실제로 배포된다(클라이언트의 `last-verdict.json`은 빠른 안내용일 뿐, 서버가 최종 강제).

@@ -54,9 +54,10 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO="${1:-}"; COMMIT="${2:-}"; TEAM="${3:-}"; SUBDOMAIN="${4:-}"; PORT="${5:-}"; ENV_ARG="${6:-}"
 # 위치 인자 6개를 소비한 뒤, 남은 인자에서 멀티서비스 옵션 플래그를 파싱한다.
 [ "$#" -ge 1 ] && shift "$(( $# < 6 ? $# : 6 ))"
-SERVICE=""; BASE_DIR=""; DOCKERFILE_LOC=""; VOLUMES=""
+SERVICE=""; BASE_DIR=""; DOCKERFILE_LOC=""; VOLUMES=""; BRANCH=""
 while [ "$#" -gt 0 ]; do
   case "$1" in
+    --branch)         BRANCH="${2:-}"; shift 2 ;;
     --service)        SERVICE="${2:-}"; shift 2 ;;
     --base-dir)       BASE_DIR="${2:-}"; shift 2 ;;
     --dockerfile-loc) DOCKERFILE_LOC="${2:-}"; shift 2 ;;
@@ -65,11 +66,20 @@ while [ "$#" -gt 0 ]; do
   esac
 done
 if [ -z "$REPO" ] || [ -z "$COMMIT" ] || [ -z "$TEAM" ] || [ -z "$SUBDOMAIN" ]; then
-  echo "USAGE deploy.sh <repo> <commit> <team> <subdomain> [port] [env_json] [--service N] [--base-dir D] [--dockerfile-loc P]" >&2
+  echo "USAGE deploy.sh <repo> <commit> <team> <subdomain> [port] [env_json] [--branch B] [--service N] [--base-dir D] [--dockerfile-loc P]" >&2
   exit 2
 fi
 # 포트: 비었으면 3000(next 기본). 숫자만 허용(아니면 3000).
 case "$PORT" in ''|*[!0-9]*) PORT=3000 ;; esac
+
+# 배포 브랜치: --branch 우선 → repo 기본 브랜치(origin/HEAD) → 현재 브랜치 → main 폴백.
+# (사내 표준은 main 이지만 repo 기본 브랜치가 master 등일 수 있어 하드코딩하지 않는다.
+#  Coolify 가 이 브랜치를 못 찾으면 빌드가 실패하므로 실제 repo 기본값을 보낸다.)
+if [ -z "$BRANCH" ]; then
+  BRANCH="$(git symbolic-ref --short refs/remotes/origin/HEAD 2>/dev/null | sed 's@^origin/@@')"
+  [ -z "$BRANCH" ] && BRANCH="$(git rev-parse --abbrev-ref HEAD 2>/dev/null || true)"
+  [ -z "$BRANCH" ] && BRANCH=main
+fi
 
 # env_vars: stdin 우선, 없으면 인자
 ENV_JSON="$ENV_ARG"
@@ -87,8 +97,8 @@ fi
 # 요청 본문 구성.
 # 항상 들어가는 필드 + 선택 필드(멀티서비스/ env_vars)를 조립한다.
 # 선택 필드는 값이 있을 때만 추가 → 세 멀티서비스 플래그 미전송 시 현행 단일배포 본문과 동일.
-BODY="$(printf '{"repo":"%s","commit":"%s","team":"%s","subdomain":"%s","port":%s' \
-  "$REPO" "$COMMIT" "$TEAM" "$SUBDOMAIN" "$PORT")"
+BODY="$(printf '{"repo":"%s","commit":"%s","team":"%s","subdomain":"%s","branch":"%s","port":%s' \
+  "$REPO" "$COMMIT" "$TEAM" "$SUBDOMAIN" "$BRANCH" "$PORT")"
 [ -n "$SERVICE" ]        && BODY="$BODY$(printf ',"service":"%s"' "$SERVICE")"
 [ -n "$BASE_DIR" ]       && BODY="$BODY$(printf ',"base_directory":"%s"' "$BASE_DIR")"
 [ -n "$DOCKERFILE_LOC" ] && BODY="$BODY$(printf ',"dockerfile_location":"%s"' "$DOCKERFILE_LOC")"
