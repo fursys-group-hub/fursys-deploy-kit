@@ -13,11 +13,13 @@ kit/
     ├─ bin/fdh-engine                        번들된 0토큰 보안 엔진 (플러그인 활성화 시 PATH 자동 등록)
     ├─ commands/                             확정적 슬래시 커맨드 입구
     │   ├─ create-app.md                     /create-app → create-app 스킬
+    │   ├─ github-setup.md                   /github-setup → github-setup 스킬
     │   ├─ deploy-check.md                   /deploy-check → security-review 스킬
     │   ├─ deploy.md                         /deploy → deploy 스킬
     │   └─ my-apps.md                        /my-apps → deploy 스킬의 my-apps.sh
     └─ skills/
         ├─ create-app/                       새 프로젝트 만들기 (scripts/create-app.sh)
+        ├─ github-setup/                     회사 GitHub 연결·가입신청·repo 등록 (scripts/github-detect.sh·repo-register.sh)
         ├─ security-review/                  배포 전 검토 (엔진 + scripts/verdict-upload.sh)
         └─ deploy/                           최초 배포 (scripts/deploy.sh·logs.sh·my-apps.sh, references/)
 ```

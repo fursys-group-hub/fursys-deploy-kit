@@ -34,21 +34,15 @@ description: 사내 서버에 자기 앱을 처음으로 생성·올린다. "사
 작업을 시작하기 전에 이 한 줄을 먼저 전한다:
 > "배포 키는 내 PC 한 곳(`~/.fursys`)에서만 읽고, 설정값은 사내 배포 시스템 한 곳(`deploy-proxy.hub.fursys.com`)으로만 보냅니다. 외부로 나가지 않아요. (혹시 보안 경고가 떠도 정상 동작이니 안심하세요.)"
 
-## ① 올릴 코드가 GitHub에 있는지 확인
-proxy는 GitHub(`fursys-group-hub/<repo>`)에 **이미 올라간 코드**로 앱을 만든다. 먼저 확인한다.
+## ① 올릴 코드가 GitHub에 있는지 확인 (연결·등록은 github-setup 담당)
+proxy는 GitHub(`fursys-group-hub/<repo>`)에 **이미 올라간 코드**로 앱을 만든다. 여기서는 **올라가 있는지 빠르게 확인만** 한다 — GitHub 가입·연결·repo 등록·올리기는 **`github-setup` 스킬**의 일이다(이 스킬에서 직접 가입 신청이나 새 repo 생성을 하지 않는다).
 ```bash
 git remote -v
 git status --porcelain
 ```
-- 원격이 `fursys-group-hub/<repo>` 가 아니거나 아직 안 올렸으면, 사용자 권한으로 올린다(변경분이 있으면 저장 후 올림). 사용자에게는 "코드를 회사 GitHub에 먼저 올릴게요"라고 쉽게 안내한다.
-  ```bash
-  git push -u origin HEAD
-  ```
-- repo 식별자는 `fursys-group-hub/<레포이름>` 으로 확정한다(`deploy.sh` 의 `repo` 인자).
-- git 원격이 아예 없으면: "먼저 회사 GitHub(`fursys-group-hub`)에 이 코드를 올려야 해요." 라고 안내하고 멈춘다. 아래 안내도 함께 전한다(GitHub 연결이 안 돼 있으면 배포가 진행되지 않는 건 정상이며, 아래 가이드를 참고하면 직접 해결할 수 있다고 알린다):
-  > "GitHub에 코드가 올라가 있어야 배포할 수 있어요. 아직 안 돼 있으면 아래 가이드를 참고해주세요.
-  > - 사내 GitHub 가입 방법: https://ai-library.hub.fursys.com/guides/github-signup
-  > - 내 코드를 GitHub에 올리는 방법: https://ai-library.hub.fursys.com/guides/push"
+- **원격이 `fursys-group-hub/<repo>` 이고 이미 올라가 있으면** → repo 식별자를 `fursys-group-hub/<레포이름>` 으로 확정하고(`deploy.sh` 의 `repo` 인자) 다음으로 진행한다. (커밋 안 된 변경분이 남아 있으면 "최신 코드를 먼저 올릴게요" 안내 후 `git push` 로 올린다.)
+- **원격이 회사 GitHub가 아니거나, git 원격이 아예 없으면** → 배포를 진행하지 않고 **github-setup 으로 안내**하고 멈춘다(가입·연결·등록이 먼저다 — deploy 스크립트를 호출하지 않는다):
+  > "배포하려면 코드가 회사 GitHub(`fursys-group-hub`)에 올라가 있어야 해요. **'깃허브 연결해줘'(또는 `/github-setup`)** 라고 하시면, 연결 상태를 확인하고 가입이 필요하면 신청을 돕고, 되면 이 프로젝트를 올려드릴게요."
 
 **배포 전 빠른 확인 — Dockerfile:** 배포는 프로젝트 루트의 `Dockerfile` 로만 이뤄진다(없으면 배포가 **반드시 실패**한다). 배포 준비 여부는 ⑤ 검토 게이트가 정식으로 보지만, 검토를 안 돌린 사용자를 위한 **빠른 실패용**으로 여기서도 한 번 본다(실패→재시도→중복 생성 악순환 방지).
 ```bash
