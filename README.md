@@ -21,7 +21,7 @@ kit/
         ├─ create-app/                       새 프로젝트 만들기 (scripts/create-app.sh)
         ├─ github-setup/                     회사 GitHub 연결·가입신청·repo 등록 (scripts/github-detect.sh·repo-register.sh)
         ├─ security-review/                  배포 전 검토 (엔진 + scripts/verdict-upload.sh)
-        └─ deploy/                           최초 배포 (scripts/deploy.sh·logs.sh·my-apps.sh, references/)
+        └─ deploy/                           최초 배포·정리 (scripts/deploy.sh·logs.sh·my-apps.sh·delete-app.sh, references/)
 ```
 
 ## 실무자 설치 (1회)
