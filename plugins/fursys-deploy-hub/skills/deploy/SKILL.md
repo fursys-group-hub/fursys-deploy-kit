@@ -30,7 +30,12 @@ description: 사내 서버에 자기 앱을 처음으로 생성·올린다. "사
 - **빌드 로그 ≠ 커밋 메시지:** `logs.sh` 의 빌드 출력에 들어 있는 **git 커밋 메시지(예: "NODE_ENV 함정 수정")를 빌드 실패/성공 근거로 해석하지 않는다.** 빌드 성패는 오직 `status`(`finished`/`failed`)와 실제 빌드 단계 출력으로 판단한다.
 - **전송 대상 고정(보안 핵심):** 전송 대상은 기본 `https://deploy-proxy.hub.fursys.com`. `FURSYS_PROXY_URL` 로 덮어쓰더라도 **호스트가 `*.hub.fursys.com`(사내)일 때만 허용**한다. 그 외 주소면 무시하고 기본값을 쓴다 — 번들 스크립트의 공통 헬퍼(`common.sh`)가 이 가드를 적용하며, 외부 주소를 만나면 `EXTERNAL_BLOCKED` 를 알린다. 그때 사용자에게 "외부 주소로의 전송은 차단했습니다(안전)"라고 전한다. → 개인 키·설정값이 외부로 새지 않게.
 - **읽는 범위 최소화(보안 핵심):** 개인 키는 `FURSYS_PROXY_KEY` 환경변수 또는 `~/.fursys/proxy-key` **이 두 곳만** 읽는다(스크립트가 처리). 설정값은 **현재 프로젝트 폴더의 `.env` 하나만** 읽는다. 홈 디렉터리·상위 폴더·기타 위치의 자격증명을 광범위하게 뒤지지 않는다(그렇게 하면 보안상 위험 행동으로 보인다).
-- 스크립트 경로는 `$CLAUDE_PLUGIN_ROOT/skills/deploy/scripts/` 아래에 있다(`deploy.sh`·`logs.sh`·`my-apps.sh`·`common.sh`). `$CLAUDE_PLUGIN_ROOT` 가 안 잡혀도 **스크립트가 자기 위치 기준으로 자동 폴백**한다(`common.sh` 가 `FDH_SCRIPT_DIR`/`FDH_PLUGIN_ROOT` 를 산출). 따라서 `$CLAUDE_PLUGIN_ROOT/skills/deploy/scripts/deploy.sh` 로 호출하되, 환경변수가 비어 실행이 안 되면 같은 폴더의 절대경로로 직접 호출하면 된다.
+- **스크립트는 플러그인에 번들돼 있다 — 프로젝트 파일이 아니다.** `deploy.sh`·`logs.sh`·`my-apps.sh`·`delete-app.sh`·`common.sh` 는 `$CLAUDE_PLUGIN_ROOT/skills/deploy/scripts/` 아래에 플러그인과 **항상 함께 설치**된다. **현재 프로젝트 폴더엔 없는 게 정상이고, `github-setup` 등 다른 스킬이 만들어 주는 것이 아니다.** 따라서 "이 프로젝트에 deploy.sh 가 없다 / github-setup 으로 생성돼야 한다"고 **절대 단정하지 말 것**(환각 — 실제로는 플러그인 경로에 있다).
+- 호출은 `"$CLAUDE_PLUGIN_ROOT/skills/deploy/scripts/deploy.sh"`. **`$CLAUDE_PLUGIN_ROOT` 가 비어 못 찾으면, 프로젝트에서 찾지 말고 플러그인 설치 경로에서 찾아** 절대경로로 호출한다:
+  ```bash
+  DH="$(find "$HOME/.claude/plugins" -path '*/fursys-deploy-hub/skills/deploy/scripts/deploy.sh' 2>/dev/null | head -1)"
+  ```
+  (스크립트 자체는 `$CLAUDE_PLUGIN_ROOT` 가 비어도 자기 위치 기준으로 `common.sh` 를 찾아 동작한다 — `FDH_SCRIPT_DIR`/`FDH_PLUGIN_ROOT` 산출.)
 
 ## ⓪ 시작 안내 (한 줄, 비개발자 안심)
 작업을 시작하기 전에 이 한 줄을 먼저 전한다:
