@@ -50,5 +50,9 @@ HTTP="$(printf '%s' "$RESP" | tail -n1)"
 case "$HTTP" in
   200) echo "STORED" ;;
   401) echo "UNAUTHORIZED" ;;
-  *) echo "UPLOAD_FAILED $HTTP" ;;
+  *)
+    echo "UPLOAD_FAILED $HTTP"
+    # 응답 본문(원인 detail)도 출력 — 서버 500 등의 진짜 원인 진단용(키/시크릿 미포함).
+    printf '%s\n' "$(printf '%s' "$RESP" | sed '$d')"
+    ;;
 esac
