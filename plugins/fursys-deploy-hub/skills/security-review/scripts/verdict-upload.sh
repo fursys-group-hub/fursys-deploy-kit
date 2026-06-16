@@ -24,6 +24,44 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=common.sh
 . "$HERE/common.sh"
 
+# 변환 결과 수용 판정: ① 비어있지 않고 ② JSON 오브젝트로 시작('{', 고장난 python 스텁의
+#   'Python ...' 출력 배제) ③ 서버를 깨는 3바이트 UTF-8 lead byte(0o340~0o357 = 0xE0~0xEF)가 0개.
+# (Windows Git Bash 의 python3 는 흔히 작동 안 하는 MS Store 스텁 → exit0+쓰레기 출력일 수 있어 검증 필수.)
+_fdh_ascii_ok() {
+  [ -n "$1" ] || return 1
+  case "$1" in "{"*) ;; *) return 1 ;; esac
+  [ "$(printf '%s' "$1" | LC_ALL=C tr -cd '\340-\357' | wc -c | tr -d ' ')" = "0" ]
+}
+
+# 비ASCII(특히 3바이트 UTF-8: 한글·한자·€ 등 U+0800~U+FFFF)를 \uXXXX 로 이스케이프.
+# 배경: 사내 ingress/WAF 가 3바이트 UTF-8 lead byte 시퀀스를 깨뜨려, proxy 의 request.json() 이
+#   UnicodeDecodeError → proxy 가 400 invalid_request 반환(2·4바이트는 통과). 엔진 findings[].message
+#   등이 한글이라 매번 재현. 본문을 ASCII 로 보내면 깨질 3바이트가 없어 통과(실측 STORED).
+# 도구를 신뢰도 순(perl→node→python)으로 시도하되 매번 _fdh_ascii_ok 로 검증 — 통과한 것만 채택,
+# 모두 실패하면 원문 그대로(최선노력; 서버 인프라가 고쳐지면 raw 도 통과).
+fdh_to_ascii() {
+  local s="$1" out
+  if command -v perl >/dev/null 2>&1; then
+    # BMP 비ASCII(U+0080~U+FFFF)만 \uXXXX 로. 4바이트(astral, >U+FFFF)는 raw 로 통과(서버가 4바이트는 받음).
+    out="$(printf '%s' "$s" | perl -CSD -pe 's/([\x{80}-\x{ffff}])/sprintf("\\u%04x",ord($1))/ge' 2>/dev/null)"
+    if _fdh_ascii_ok "$out"; then printf '%s' "$out"; return 0; fi
+  fi
+  if command -v node >/dev/null 2>&1; then
+    out="$(printf '%s' "$s" | node -e 'let d="";process.stdin.on("data",c=>d+=c);process.stdin.on("end",()=>{try{process.stdout.write(JSON.stringify(JSON.parse(d)).replace(/[\s\S]/g,c=>{const n=c.charCodeAt(0);return n>127?"\\u"+n.toString(16).padStart(4,"0"):c}))}catch(e){}})' 2>/dev/null)"
+    if _fdh_ascii_ok "$out"; then printf '%s' "$out"; return 0; fi
+  fi
+  # python 은 stdin 을 반드시 UTF-8 로 디코딩(Windows 기본 stdin 인코딩 cp949 회피).
+  if command -v python3 >/dev/null 2>&1; then
+    out="$(printf '%s' "$s" | python3 -c 'import json,sys; sys.stdout.write(json.dumps(json.loads(sys.stdin.buffer.read().decode("utf-8"))))' 2>/dev/null)"
+    if _fdh_ascii_ok "$out"; then printf '%s' "$out"; return 0; fi
+  fi
+  if command -v python >/dev/null 2>&1; then
+    out="$(printf '%s' "$s" | python -c 'import json,sys; sys.stdout.write(json.dumps(json.loads(sys.stdin.buffer.read().decode("utf-8"))))' 2>/dev/null)"
+    if _fdh_ascii_ok "$out"; then printf '%s' "$out"; return 0; fi
+  fi
+  printf '%s' "$s"
+}
+
 REPO="${1:-}"; COMMIT="${2:-}"
 if [ -z "$COMMIT" ]; then
   echo "NO_COMMIT"
@@ -36,10 +74,12 @@ if [ -z "$BODY" ]; then
   exit 2
 fi
 
-# JSON 내 역슬래시(\\) → 슬래시(/) 정규화.
-# Windows에서 fdh-engine이 경로를 역슬래시로 출력하면 프록시 입력 검증에 걸려 400 발생.
-# JSON의 \\는 항상 리터럴 역슬래시이므로 /로 치환해도 \n·\t·\" 등 이스케이프는 영향 없음.
+# 전송 직전 본문 정규화 (사내 프록시 앞단 인프라의 입력 검증 우회 — 두 트리거):
+# 1) 역슬래시(\\) → 슬래시(/): Windows 경로(fdh-engine 출력)가 역슬래시면 400.
+#    JSON 의 \\는 항상 리터럴 역슬래시라 /로 치환해도 \n·\t·\" 이스케이프엔 영향 없음.
 BODY="$(printf '%s' "$BODY" | sed 's/\\\\/\//g')"
+# 2) 3바이트 UTF-8(한글 등) → \uXXXX: raw 로 보내면 400(위 fdh_to_ascii 주석 참조).
+BODY="$(fdh_to_ascii "$BODY")"
 
 fdh_resolve_url || true
 if ! fdh_load_key; then

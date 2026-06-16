@@ -83,7 +83,10 @@ printf '%s' "$VERDICT_BODY_JSON" | \
 
 - 선택 필드는 **값이 있을 때만** 넣는다(없으면 키 자체를 생략).
 - **HTML 리포트 경로·본문은 넣지 않는다.** `last-verdict.json` 의 `report`/`generated_at` 도 보내지 않는다(로컬 전용).
-- **역슬래시 금지**: `engine_verdict.target.path`, `findings[].file` 등 경로 값에 역슬래시(`\`)가 포함되면 프록시가 400으로 거부한다(Windows 실행 시 발생). `verdict-upload.sh` 가 전송 직전 자동으로 `\\` → `/` 정규화하므로 별도 처리 불필요 — 단 JSON 조립 시 역슬래시를 의도적으로 넣지 말 것.
+- **전송 직전 자동 정규화(스크립트가 처리 — 별도 처리 불필요):** 사내 프록시 앞단 인프라가 두 가지 입력을 깨뜨려 400 `invalid_request` 를 유발하므로, `verdict-upload.sh` 가 POST 직전 본문을 자동 정규화한다.
+  1. **역슬래시 → 슬래시**: `target.path`·`findings[].file` 등의 Windows 경로 역슬래시(`\`)를 `/` 로 치환.
+  2. **3바이트 UTF-8 → `\uXXXX`**: 한글·한자 등(U+0800~U+FFFF)을 ASCII 이스케이프(perl→node→python 중 가용 도구). 인프라가 3바이트 UTF-8 시퀀스를 깨 `request.json()` 파싱이 실패하는 문제 우회(2·4바이트는 영향 없음). 의미는 보존되고 서버 저장값도 동일하다.
+  - 둘 다 스크립트가 알아서 하므로 JSON 조립 시 신경 쓸 필요 없다. (근본 원인은 프록시 앞단 인프라이며 IT본부가 서버측에서 별도 처리 예정.)
 
 ## 5) 응답 처리 (스크립트 결과 코드 기준)
 - `STORED` (200 `{"stored":true}`) → 등록 성공. 조용히 6단계로 진행(별도 자랑 불필요).
