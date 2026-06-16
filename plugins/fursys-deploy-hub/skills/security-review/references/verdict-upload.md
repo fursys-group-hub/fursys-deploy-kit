@@ -83,6 +83,7 @@ printf '%s' "$VERDICT_BODY_JSON" | \
 
 - 선택 필드는 **값이 있을 때만** 넣는다(없으면 키 자체를 생략).
 - **HTML 리포트 경로·본문은 넣지 않는다.** `last-verdict.json` 의 `report`/`generated_at` 도 보내지 않는다(로컬 전용).
+- **역슬래시 금지**: `engine_verdict.target.path`, `findings[].file` 등 경로 값에 역슬래시(`\`)가 포함되면 프록시가 400으로 거부한다(Windows 실행 시 발생). `verdict-upload.sh` 가 전송 직전 자동으로 `\\` → `/` 정규화하므로 별도 처리 불필요 — 단 JSON 조립 시 역슬래시를 의도적으로 넣지 말 것.
 
 ## 5) 응답 처리 (스크립트 결과 코드 기준)
 - `STORED` (200 `{"stored":true}`) → 등록 성공. 조용히 6단계로 진행(별도 자랑 불필요).

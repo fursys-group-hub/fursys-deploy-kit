@@ -36,6 +36,11 @@ if [ -z "$BODY" ]; then
   exit 2
 fi
 
+# JSON 내 역슬래시(\\) → 슬래시(/) 정규화.
+# Windows에서 fdh-engine이 경로를 역슬래시로 출력하면 프록시 입력 검증에 걸려 400 발생.
+# JSON의 \\는 항상 리터럴 역슬래시이므로 /로 치환해도 \n·\t·\" 등 이스케이프는 영향 없음.
+BODY="$(printf '%s' "$BODY" | sed 's/\\\\/\//g')"
+
 fdh_resolve_url || true
 if ! fdh_load_key; then
   echo "NO_KEY"
