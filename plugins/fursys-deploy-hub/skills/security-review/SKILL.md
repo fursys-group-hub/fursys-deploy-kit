@@ -18,10 +18,11 @@ description: 배포 전 검토 — 보안 + 배포 가능성 두 축을 점검�
 
 ## 2) 엔진 실행 (0토큰, 네트워크/LLM 없음) — 시크릿/git/framework/env의 단일 소스
 ```bash
-fdh-engine "<대상경로>" --json --no-prompt
+mkdir -p .fursys-deploy-hub
+fdh-engine "<대상경로>" --json --no-prompt > .fursys-deploy-hub/_engine.json
 ```
 - `fdh-engine` 은 이 플러그인 `bin/` 에 번들된 단일 실행 파일로, 플러그인 활성화 시 PATH에 자동 등록된다(별도 설치 불필요).
-- stdout의 JSON이 결과다(`contracts/security-verdict.schema.json` 형식). stderr는 로그.
+- 결과 JSON 을 `.fursys-deploy-hub/_engine.json` 에 저장한다(`contracts/security-verdict.schema.json` 형식). 이 파일을 읽어 해석하고, **5-2 등록 때 빌더가 이 파일을 그대로 다시 써서 본문을 만든다(손 조립 방지).** stderr는 로그.
 - exit code: 0=pass, 1=caution, 2=blocked.
 - **엔진이 안 돌면 그 사실을 알리고 멈춘다(임의 판단 금지).**
 
@@ -107,15 +108,18 @@ ls -1 docker-compose.yml compose.yaml 2>/dev/null  # compose 있나(구조 힌�
 - **개인 배포 키**가 있을 때만 등록한다. 키는 `FURSYS_PROXY_KEY` 환경변수 우선, 없으면 `~/.fursys/proxy-key`(Windows: `%USERPROFILE%\.fursys\proxy-key`) 이 두 곳만 본다.
   - **키가 없으면 등록을 건너뛴다**(검사 자체는 멈추지 않는다). 사용자에게: "검토는 마쳤어요(HTML 리포트 생성). 다만 **아직 배포 키가 없어 검토 결과를 배포 시스템에 등록하진 못했어요.** 배포 게이트는 *등록된* 검토 기록을 보므로, **배포 키를 받은 뒤('배포해줘'를 한 번 실행하면 키를 입력하게 됩니다) → '배포 전 검토'를 다시 한 번 실행**해 주세요. 그때 등록됩니다." 라고 안내한다. **⚠️ 배포(`deploy`) 자체는 검토 결과를 등록하지 않는다 — 등록은 반드시 이 검토 단계에서 키가 있을 때 일어난다. "배포할 때 자동 등록된다"고 안내하지 말 것(무한 루프 유발).**
   - 등록은 시도했으나 **네트워크 등으로 실패**하면: "검토 결과를 배포 시스템에 등록하지 못했어요(연결 문제). 배포할 때 다시 시도됩니다." 안내(검사 결과·로컬 리포트는 이미 남았으니 차단하지 않는다).
-- **등록은 번들 스크립트로 한다(curl 을 손으로 짜지 않는다):** 페이로드(VerdictBody JSON)는 `references/verdict-upload.md` 를 그때 읽어 구성하고(엔진 JSON 값을 그대로 — **시크릿 본체 금지**, 엔진이 마스킹한 형태만), 그것을 **표준입력(stdin)으로** `scripts/verdict-upload.sh` 에 넘긴다. 스크립트가 키 확보·전송 대상 가드·`POST /verdict` 호출을 처리한다.
+- **등록 본문은 빌더가 기계 조립한다(VerdictBody JSON 을 손으로 쓰지 않는다):** 위험한 값(findings 의 한글·따옴표·경로)은 2단계에서 저장한 `.fursys-deploy-hub/_engine.json` 에서 빌더(`scripts/verdict-build.sh`)가 그대로 싣고, 너는 작은 스칼라(보안/배포가능/최종)만 넘긴다. 빌더 출력(유효 VerdictBody JSON)을 **그대로 `verdict-upload.sh` 의 stdin** 으로 파이프한다. 두 스크립트가 키 확보·정규화·전송 대상 가드·사전검증·`POST /verdict` 를 처리한다. (시크릿 본체 금지 — 엔진 마스킹 형태만 실린다. 상세는 `references/verdict-upload.md`.)
   ```bash
+  ROOT="$CLAUDE_PLUGIN_ROOT/skills/security-review"   # 안 잡히면 스킬 폴더 절대경로로 대체
   REPO_NAME=$(basename -s .git "$(git config --get remote.origin.url 2>/dev/null)")
   REPO="fursys-group-hub/${REPO_NAME}"
   COMMIT=$(git rev-parse HEAD 2>/dev/null || echo "")
-  printf '%s' "$VERDICT_BODY_JSON" | \
-    "$CLAUDE_PLUGIN_ROOT/skills/security-review/scripts/verdict-upload.sh" "$REPO" "$COMMIT"
+  # <SECURITY>=pass|caution|blocked, <DEPLOYABLE>=true|false, <FINAL>=ok|blocked (5-1 과 동일 값)
+  "$ROOT/scripts/verdict-build.sh" ".fursys-deploy-hub/_engine.json" "$REPO" "$COMMIT" "<SECURITY>" "<DEPLOYABLE>" "<FINAL>" \
+    | "$ROOT/scripts/verdict-upload.sh" "$REPO" "$COMMIT"
   ```
-  스크립트 결과 코드: `STORED`(성공, 조용히 6단계로) / `NO_KEY`(키 없음 → 위 건너뜀 안내) / `NO_COMMIT`(commit 없음 → 등록 생략, 커밋·푸시 후 배포 시 등록됨을 안내) / `UNAUTHORIZED`(키 무효 → 위 401 안내, 검사 차단 안 함) / `UPLOAD_FAILED <code>`(연결 문제 → 위 실패 안내, 배포 때 재시도). 어느 경우든 6단계(HTML 리포트)는 반드시 만든다. (`$CLAUDE_PLUGIN_ROOT` 가 안 잡히면 스킬 폴더의 `scripts/verdict-upload.sh` 절대경로로 실행한다.)
+  - `<SECURITY>`·`<DEPLOYABLE>`·`<FINAL>` 자리에 5-1 에서 정한 값만 그대로 넣는다. 나머지 본문 필드(summary·findings·framework·env_vars·engine_verdict)는 빌더가 엔진 JSON 에서 자동으로 채운다 — **VerdictBody JSON 을 직접 작성하지 말 것.**
+  스크립트 결과 코드: `STORED`(성공, 조용히 6단계로) / `NO_KEY`(키 없음 → 위 건너뜀 안내) / `NO_COMMIT`(commit 없음 → 등록 생략, 커밋·푸시 후 배포 시 등록됨을 안내) / `UNAUTHORIZED`(키 무효 → 위 401 안내, 검사 차단 안 함) / `UPLOAD_FAILED <code>`(연결 문제 → 위 실패 안내, 배포 때 재시도) / `BAD_BODY <사유>`(등록 본문이 불완전하거나 JSON이 깨짐 — **키·서버 문제가 아니다**. 표시된 사유대로 `VERDICT_BODY_JSON` 을 필수값(repo·commit·security·deployable·final·summary) 모두 채워 **유효한 JSON**으로 다시 만들고 등록을 1회 재시도한다. 재시도도 `BAD_BODY` 면 그 사유만 조용히 남기고 검사를 막지 않는다). 어느 경우든 6단계(HTML 리포트)는 반드시 만든다. (`$CLAUDE_PLUGIN_ROOT` 가 안 잡히면 스킬 폴더의 `scripts/verdict-upload.sh` 절대경로로 실행한다.)
 
 ## 6) HTML 리포트 생성 (조각만 만들고 스크립트가 조립 — 토큰 절감)
 **템플릿(CSS·레이아웃·17KB) 전체를 Read 하거나 다시 출력하지 않는다.** 대신 **동적 조각(placeholder 값)만** 담은 작은 values 파일을 Write 하고, 번들 스크립트 `scripts/render-report.sh` 가 템플릿의 `{{KEY}}` 자리에 끼워넣어 완성 HTML을 만든다. (= 템플릿 boilerplate를 LLM이 다시 토해내지 않으므로 출력 토큰이 크게 준다. 완성물은 예전 방식과 **동일**하다 — 템플릿 바이트는 손대지 않는다.) 조각은 JSON 값 + 심화 결과로 채우되 비개발자가 읽도록 한글로 해석한다. **HTML 리포트 본체는 배포 시스템에 올리지 않는다 — 로컬 HTML 파일까지만.**(구조화 검토 결과 등록은 5-2에서 이미 처리했다.)

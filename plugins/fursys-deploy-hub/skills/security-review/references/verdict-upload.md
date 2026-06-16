@@ -39,10 +39,13 @@ SKILL.md 5-2 단계에서 쓴다. **종합 판정 + `last-verdict.json` 기록�
   게이트 commit 과 일치한다. 아직 커밋 안 한 변경이 있으면 사용자에게 "지금 변경분을 저장(commit)·
   올린(push) 뒤 배포해야 이 검토 결과가 그대로 인정돼요" 라고 알린다.
 
-## 4) VerdictBody JSON 구성 (스크립트 stdin 으로 전달)
-엔진 JSON(2단계 결과)과 종합 판정 값을 그대로 실은 아래 형태의 JSON 을 만들어
-**`scripts/verdict-upload.sh <repo> <commit>` 의 표준입력(stdin)으로** 넘긴다. 선택 필드
-(`findings`/`env_vars`/`engine_verdict`)는 **엔진이 마스킹한 형태 그대로** 넣는다(시크릿 본체 금지).
+## 4) VerdictBody JSON 구성 — 빌더가 기계 조립한다 (직접 작성 금지)
+**VerdictBody JSON 을 손으로 쓰지 않는다.** 위험한 값(findings 의 한글·따옴표·역슬래시·줄바꿈)을
+사람이 JSON 리터럴에 박아넣다 이스케이프를 틀려 본문이 깨지던 문제(과거 400 의 진짜 원인)와 필수필드
+누락을 없애기 위해, `scripts/verdict-build.sh` 가 2단계에서 저장한 엔진 JSON(`.fursys-deploy-hub/_engine.json`)을
+읽어 직렬화기로 본문을 만든다. 너는 작은 스칼라(repo/commit/security/deployable/final)만 넘긴다.
+선택 필드(`findings`/`env_vars`/`engine_verdict`)는 빌더가 엔진 마스킹 형태 그대로 싣는다(시크릿 본체 금지).
+아래 표는 **빌더가 채우는 결과 형태(참고용)** — 직접 만들 형태가 아니다.
 
 ```json
 {
@@ -58,11 +61,12 @@ SKILL.md 5-2 단계에서 쓴다. **종합 판정 + `last-verdict.json` 기록�
   "engine_verdict":{ /* 엔진 원본 verdict JSON 전체, 없으면 생략 */ }
 }
 ```
-호출:
+호출(빌더 → 업로드 파이프):
 ```bash
-printf '%s' "$VERDICT_BODY_JSON" | \
-  "$CLAUDE_PLUGIN_ROOT/skills/security-review/scripts/verdict-upload.sh" \
-  "fursys-group-hub/<REPO_NAME>" "<HEAD SHA>"
+ROOT="$CLAUDE_PLUGIN_ROOT/skills/security-review"
+"$ROOT/scripts/verdict-build.sh" ".fursys-deploy-hub/_engine.json" \
+    "fursys-group-hub/<REPO_NAME>" "<HEAD SHA>" "<SECURITY>" "<DEPLOYABLE:true|false>" "<FINAL>" \
+  | "$ROOT/scripts/verdict-upload.sh" "fursys-group-hub/<REPO_NAME>" "<HEAD SHA>"
 ```
 
 ### 보내는 값 (어디서 오는가)
@@ -83,10 +87,11 @@ printf '%s' "$VERDICT_BODY_JSON" | \
 
 - 선택 필드는 **값이 있을 때만** 넣는다(없으면 키 자체를 생략).
 - **HTML 리포트 경로·본문은 넣지 않는다.** `last-verdict.json` 의 `report`/`generated_at` 도 보내지 않는다(로컬 전용).
-- **전송 직전 자동 정규화(스크립트가 처리 — 별도 처리 불필요):** 사내 프록시 앞단 인프라가 두 가지 입력을 깨뜨려 400 `invalid_request` 를 유발하므로, `verdict-upload.sh` 가 POST 직전 본문을 자동 정규화한다.
-  1. **역슬래시 → 슬래시**: `target.path`·`findings[].file` 등의 Windows 경로 역슬래시(`\`)를 `/` 로 치환.
-  2. **3바이트 UTF-8 → `\uXXXX`**: 한글·한자 등(U+0800~U+FFFF)을 ASCII 이스케이프(perl→node→python 중 가용 도구). 인프라가 3바이트 UTF-8 시퀀스를 깨 `request.json()` 파싱이 실패하는 문제 우회(2·4바이트는 영향 없음). 의미는 보존되고 서버 저장값도 동일하다.
-  - 둘 다 스크립트가 알아서 하므로 JSON 조립 시 신경 쓸 필요 없다. (근본 원인은 프록시 앞단 인프라이며 IT본부가 서버측에서 별도 처리 예정.)
+- **전송 직전 자동 정규화·검증(스크립트가 처리 — 별도 처리 불필요):** `verdict-upload.sh` 가 POST 직전에:
+  1. **비ASCII → `\uXXXX`**: 한글·한자 등을 ASCII 이스케이프한다(node 직렬화기로 본문을 다시 만들어 처리 → 항상 유효 JSON, 백슬래시·따옴표도 정확히 보존). 사내 프록시 앞단 인프라가 3바이트 UTF-8 시퀀스를 깨 `request.json()` 이 실패하는 문제를 우회한다(의미·서버 저장값 동일). ※ 과거의 "역슬래시→슬래시" 치환은 정상 JSON 이스케이프 `\"` 를 `/"` 로 부숴 오히려 본문을 깨뜨려서 **제거**했다.
+  2. **사전검증 게이트**: 서버와 동일 조건(repo·commit·security·final 존재, deployable 비-null, summary 객체)을 보내기 전에 확인해, 실패하면 보내지 않고 `BAD_BODY <사유>` 로 알린다(서버 왕복·401 오진단 방지). 빌더로 본문을 만들면 이 게이트는 통과가 보장되며, 손 조립 우회 시의 안전망으로 남는다.
+  3. 본문은 **stdin(`--data-binary @-`)**으로 전송한다(Windows 명령행 길이 한계 우회) + 연결/전체 타임아웃으로 무한 대기 방지.
+  - 모두 스크립트가 알아서 한다. (3바이트 UTF-8 의 근본 원인은 프록시 앞단 인프라이며 IT본부가 서버측에서 별도 처리 예정.)
 
 ## 5) 응답 처리 (스크립트 결과 코드 기준)
 - `STORED` (200 `{"stored":true}`) → 등록 성공. 조용히 6단계로 진행(별도 자랑 불필요).
