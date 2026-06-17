@@ -172,6 +172,11 @@ TS=$(date '+%Y%m%d-%H%M')
   | `ENV_ROWS` 의 설명칸 | `envNotes[]` (name→note) | class→다루는 방법은 board 가 엔진 env class 로 결정 |
 
   최상위 필수: `schemaVersion`(=1), `security`, `deployable`, `final`(`ok`/`blocked`), `finalLine`. 선택: `checkedAt`, `owaspFindings`, `deployChecks`, `prompts`, `envNotes`. 형태는 `references/verdict-upload.md` §4-1 의 예시와 `contracts/security-verdict.schema.json#/$defs/reportData` 를 따른다.
+  - **각 배열의 필드명을 정확히 이대로 쓴다(board 렌더러가 이 키로만 읽는다 — 엔진식 `rule`/`file`/`line`/`note`/`body` 로 쓰지 말 것):**
+    - `owaspFindings[]` = `{severity, location(="파일:줄" 한 문자열, 없으면 생략), type(=유형), message, presumed?, aiPrompt?}` — 엔진처럼 `rule`/`file`/`line` 으로 쪼개지 말고 `location`·`type` 으로.
+    - `deployChecks[]` = `{item(=점검 항목명), status(`ok`/`no`/`skip`), message(=설명)}` — `name`/`note` 아님.
+    - `prompts[]` = `{kind(`security`/`deploy`), severity, title, prompt(=복붙 본문)}` — 본문 키는 `prompt`, `body` 아님.
+    - `envNotes[]` = `{name, note}`.
   - 각 항목 enum: `owaspFindings[].severity`·`prompts[].severity` = `critical|high|medium|low`, `deployChecks[].status` = `ok`(✅)·`no`(❌, 배포 막음)·`skip`(➖, 권장), `prompts[].kind` = `security`|`deploy`.
 
 리포트 구성(템플릿이 이미 이 순서·스타일로 짜여 있다 — 각 placeholder에 아래 의미를 채운다. CSS/구조는 손대지 않는다):
