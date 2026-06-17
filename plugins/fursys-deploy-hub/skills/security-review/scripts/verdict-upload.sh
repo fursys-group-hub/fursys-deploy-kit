@@ -13,7 +13,8 @@
 #   (repo/commit 인자는 검증·로깅용. body 안에도 들어 있어야 한다.)
 #
 # 출력(stdout): 첫 줄 결과 코드.
-#   STORED             200 {"stored":true} → 등록 성공
+#   STORED             200 {"stored":true} → 등록 성공 (report_url 없음 → 로컬 HTML 폴백 안내)
+#   STORED <url>       200 + report_url 동봉 → 등록 성공 + 추측 불가 토큰 리포트 URL(우선 안내)
 #   NO_KEY             키 없음 → 등록 건너뜀(검사 자체는 멈추지 않음)
 #   NO_COMMIT          commit 인자 없음 → 등록 생략(게이트가 commit 단위)
 #   UNAUTHORIZED       401 invalid_key
@@ -111,13 +112,28 @@ RESP="$(printf '%s' "$BODY" | curl -sS -w $'\n%{http_code}' \
   -H "X-Proxy-Key: $KEY" -H "Content-Type: application/json" \
   --data-binary @- 2>/dev/null || true)"
 HTTP="$(printf '%s' "$RESP" | tail -n1)"
+RESP_BODY="$(printf '%s' "$RESP" | sed '$d')"
+
+# 200 본문에서 report_url 을 안전하게 파싱한다(있을 때만 — report_data 동봉 시 board 가 돌려줌).
+#   JSON 파서(node) 로만 추출 → 따옴표/이스케이프 오해 없음. node 없거나 키 없으면 빈 문자열.
+_fdh_extract_report_url() {
+  command -v node >/dev/null 2>&1 || return 0
+  printf '%s' "$1" | node -e 'let d="";process.stdin.setEncoding("utf8");process.stdin.on("data",c=>d+=c);process.stdin.on("end",()=>{try{const o=JSON.parse(d);if(o&&typeof o.report_url==="string"&&o.report_url)process.stdout.write(o.report_url);}catch(e){}})' 2>/dev/null
+}
 
 case "$HTTP" in
-  200) echo "STORED" ;;
+  200)
+    REPORT_URL="$(_fdh_extract_report_url "$RESP_BODY")"
+    if [ -n "$REPORT_URL" ]; then
+      echo "STORED $REPORT_URL"
+    else
+      echo "STORED"
+    fi
+    ;;
   401) echo "UNAUTHORIZED" ;;
   *)
     echo "UPLOAD_FAILED $HTTP"
     # 응답 본문(원인 detail)도 출력 — 서버 500 등의 진짜 원인 진단용(키/시크릿 미포함).
-    printf '%s\n' "$(printf '%s' "$RESP" | sed '$d')"
+    printf '%s\n' "$RESP_BODY"
     ;;
 esac

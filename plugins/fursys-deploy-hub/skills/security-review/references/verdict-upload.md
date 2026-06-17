@@ -66,8 +66,42 @@ SKILL.md 5-2 단계에서 쓴다. **종합 판정 + `last-verdict.json` 기록�
 ROOT="$CLAUDE_PLUGIN_ROOT/skills/security-review"
 "$ROOT/scripts/verdict-build.sh" ".fursys-deploy-hub/_engine.json" \
     "fursys-group-hub/<REPO_NAME>" "<HEAD SHA>" "<SECURITY>" "<DEPLOYABLE:true|false>" "<FINAL>" \
+    --report-data ".fursys-deploy-hub/_report-data.json" \
   | "$ROOT/scripts/verdict-upload.sh" "fursys-group-hub/<REPO_NAME>" "<HEAD SHA>"
 ```
+
+## 4-1) report_data — 리포트 렌더 조각(엔진에 없는 LLM/배포준비 산출물만)
+SKILL.md 6단계에서 `.fursys-deploy-hub/_report-data.json` 으로 Write 한 구조화 조각을, 빌더가 `--report-data <path>` 로 받아 본문 `report_data` 키로 싣는다. **이 조각도 손으로 본문에 박지 않는다(빌더 경유)** — 6단계 placeholder 와 1:1.
+- **엔진 파트는 넣지 않는다**: summary/findings/env_vars/engine_verdict 는 board 가 저장된 엔진 컬럼으로 렌더한다(중복·재전송 금지). report_data 엔 **엔진에 없는 것만** — 배지/최종라인/owaspFindings/deployChecks/prompts/envNotes.
+- **report_data 가 동봉되면**: board 가 그 commit 에 추측 불가 토큰을 발급/유지하고, 업로드 응답에 `report_url`(=`{board 공개도메인}/report/{token}`)·`report_token` 이 담겨 온다. 없거나 깨지면 빌더가 무시하고 report_data 없이 보낸다(=구버전 동작, 로컬 HTML 폴백, URL 없음).
+- **시크릿 평문 금지**: prompts/owaspFindings 의 메시지·프롬프트에 키/비번 값을 그대로 넣지 말 것(엔진 마스킹 형태만).
+- 최상위: 필수 `schemaVersion`(=1)·`security`(`pass|caution|blocked`)·`deployable`(bool)·`final`(`ok|blocked`)·`finalLine`(텍스트). 선택 `checkedAt`·`owaspFindings[]`·`deployChecks[]`·`prompts[]`·`envNotes[]`.
+
+```json
+{
+  "schemaVersion": 1,
+  "security": "caution",
+  "deployable": true,
+  "final": "ok",
+  "checkedAt": "2026-06-17 17:30",
+  "finalLine": "✅ 배포 가능합니다",
+  "owaspFindings": [
+    { "severity": "high", "location": "src/api/cors.ts:8", "type": "CORS 설정",
+      "message": "모든 출처를 허용(*)하고 있어요. 사내 도메인만 허용하도록 좁혀 주세요.",
+      "presumed": false, "aiPrompt": "src/api/cors.ts 의 CORS allowlist 를 ... 로 바꿔주세요" }
+  ],
+  "deployChecks": [
+    { "item": "Dockerfile", "status": "ok",  "message": "배포에 쓸 Dockerfile이 있어요." },
+    { "item": "포트 일치",   "status": "no",  "message": "Dockerfile 포트와 앱 실제 포트가 달라요." },
+    { "item": "상태점검(HEALTHCHECK)", "status": "skip", "message": "없어도 배포는 되지만 넣으면 더 안전해요." }
+  ],
+  "prompts": [
+    { "kind": "deploy", "severity": "high", "title": "포트 맞추기", "prompt": "Dockerfile 의 EXPOSE 를 앱 포트(3000)로 ..." }
+  ],
+  "envNotes": [ { "name": "DATABASE_URL", "note": "데이터베이스 비밀번호" } ]
+}
+```
+- `deployChecks[].status`: `ok`(✅)·`no`(❌, 배포 막음)·`skip`(➖, 권장). `prompts[].kind`: `security`(🔒)·`deploy`(🚀). severity enum: `critical|high|medium|low`.
 
 ### 보내는 값 (어디서 오는가)
 | 필드 | 필수 | 타입 | 출처 |
@@ -84,6 +118,7 @@ ROOT="$CLAUDE_PLUGIN_ROOT/skills/security-review"
 | `findings` | – | array\|null | 엔진 `findings` 그대로(마스킹됨, **평문 시크릿 금지**) |
 | `env_vars` | – | array\<{name,class}\>|null | 엔진 `envVars`(값 미포함, name+class만) |
 | `engine_verdict` | – | object\|null | 엔진 원본 verdict JSON 전체(감사·재현용) |
+| `report_data` | – | object\|null | 엔진에 없는 LLM/배포준비 산출물(4-1). `--report-data` 파일에서 빌더가 실음. 동봉 시 응답에 report_url |
 
 - 선택 필드는 **값이 있을 때만** 넣는다(없으면 키 자체를 생략).
 - **HTML 리포트 경로·본문은 넣지 않는다.** `last-verdict.json` 의 `report`/`generated_at` 도 보내지 않는다(로컬 전용).
@@ -94,8 +129,9 @@ ROOT="$CLAUDE_PLUGIN_ROOT/skills/security-review"
   - 모두 스크립트가 알아서 한다. (3바이트 UTF-8 의 근본 원인은 프록시 앞단 인프라이며 IT본부가 서버측에서 별도 처리 예정.)
 
 ## 5) 응답 처리 (스크립트 결과 코드 기준)
-- `STORED` (200 `{"stored":true}`) → 등록 성공. 조용히 6단계로 진행(별도 자랑 불필요).
-- `NO_KEY` → 1)의 "키 없어 등록 건너뜀" 안내.
+- `STORED <리포트 URL>` (200 `{"stored":true,"report_url":"https://.../report/<token>"}`) → 등록 성공 + 추측 불가 토큰 리포트 URL. **그 URL 을 사용자에게 우선 안내**한다(raw URL 그대로 — `[한글](url)` 하이퍼링크 금지). last-verdict.json `report_url` 에도 기록. 로컬 HTML 도 보조로 함께 안내(오프라인 폴백).
+- `STORED` (200 `{"stored":true}`, report_url 없음) → 등록 성공. 서버 리포트 URL 은 없으니 **로컬 HTML 경로를 안내**한다(report_data 미동봉/구버전 board). 조용히 6단계로 진행.
+- `NO_KEY` → 1)의 "키 없어 등록 건너뜀" 안내(로컬 HTML 폴백).
 - `NO_COMMIT` → commit 이 없어 등록 생략. "지금 변경분을 저장(commit)·올린(push) 뒤 배포해야
   이 검토 결과가 그대로 인정돼요" 라고 안내(3 참조).
 - `UNAUTHORIZED` (401 `invalid_key`) → "배포 키가 유효하지 않거나 회수된 것 같아요. 검토 자체는 끝났고
@@ -103,4 +139,4 @@ ROOT="$CLAUDE_PLUGIN_ROOT/skills/security-review"
 - `UPLOAD_FAILED <code>` / 네트워크 실패 → "검토 결과를 배포 시스템에 등록하지 못했어요(연결 문제).
   배포할 때 다시 시도됩니다." (로컬 리포트·`last-verdict.json` 은 이미 남았으니 그대로 진행)
 
-어느 경우든 **등록 성공 여부와 무관하게 6단계(HTML 리포트)는 반드시 만든다.**
+어느 경우든 **등록 성공 여부와 무관하게 6단계(로컬 HTML 리포트)는 반드시 만든다(폴백).** 서버 리포트 URL(`STORED <url>`)이 있으면 그것을 우선 안내하고, 없으면 로컬 HTML 경로를 안내한다.
