@@ -22,6 +22,25 @@ NAME="${1:-}"
 [ -z "$NAME" ] && { echo "USAGE repo-register.sh <name>" >&2; exit 2; }
 FULL="${ORG}/${NAME}"
 
+# 사용자 노출 완료 메시지를 스크립트가 직접 조립한다(모델은 ===SHOW===~===END=== 사이를 그대로 보여주기만 함 → 모델별 편차 제거).
+# $1 = repo URL(있으면 링크 표시, 없으면 링크 없이)
+emit_done() {
+  if [ -n "${1:-}" ]; then HEAD_LINE="🎉 회사 GitHub에 올렸어요: $1"; else HEAD_LINE="🎉 회사 GitHub에 올렸어요."; fi
+  cat <<EOF
+===SHOW===
+${HEAD_LINE}
+
+이제 가장 신나는 단계예요 — **직접 만들어볼 차례!** 💪
+만들어진 폴더에서 원하는 화면·기능을 하나씩 붙여 보세요. 처음이라도 괜찮아요, 막히는 부분은 언제든 저에게 말씀해 주시면 같이 해결해요. 응원할게요! 🙌
+
+개발이 어느 정도 되면, 이렇게 올리면 돼요:
+
+1. **배포 전 검토** — "배포 전 검토 해줘"(또는 \`/deploy-check\`)라고 하시면 보안·배포 준비를 점검해 드려요.
+2. **배포** — "사내 서버에 올려줘"(또는 \`/deploy\`)라고 하시면 처음 한 번 올려요. 이후 수정은 그냥 저장하면 자동으로 다시 올라가요.
+===END===
+EOF
+}
+
 # 1) git 저장소 보장 + 최소 1커밋(없으면 push 불가)
 if ! git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
   git init -q || { echo "GIT_FAILED"; exit 0; }
@@ -39,7 +58,7 @@ REMOTE="$(git remote get-url origin 2>/dev/null || echo "")"
 if [ -n "$REMOTE" ]; then
   if printf '%s' "$REMOTE" | grep -qi "$ORG"; then
     # 출력을 캡처해 결과 코드를 항상 첫 줄에 둔다(SKILL '첫 줄 코드' 계약).
-    if OUT="$(git push -u origin HEAD 2>&1)"; then echo "PUSHED ${FULL}"; else echo "PUSH_FAILED"; printf '%s\n' "$OUT"; fi
+    if OUT="$(git push -u origin HEAD 2>&1)"; then echo "PUSHED ${FULL}"; emit_done "https://github.com/${FULL}"; else echo "PUSH_FAILED"; printf '%s\n' "$OUT"; fi
     exit 0
   else
     echo "REMOTE_MISMATCH ${REMOTE}"   # 다른 remote 가 이미 연결됨 — 함부로 바꾸지 않는다
@@ -56,7 +75,7 @@ if ! command -v gh >/dev/null 2>&1; then
   URL="https://github.com/${FULL}"
   git remote add origin "${URL}.git" 2>/dev/null || git remote set-url origin "${URL}.git"
   if OUT="$(git push -u origin HEAD 2>&1)"; then
-    echo "REGISTERED ${FULL} ${URL}"
+    echo "REGISTERED ${FULL} ${URL}"; emit_done "${URL}"
   elif printf '%s' "$OUT" | grep -qiE "not found|does not exist|404"; then
     git remote remove origin 2>/dev/null
     echo "NEED_REPO_CREATE ${NAME} https://github.com/new?owner=${ORG}&name=${NAME}"
@@ -72,7 +91,7 @@ if gh repo view "$FULL" >/dev/null 2>&1; then
 fi
 if OUT="$(gh repo create "$FULL" --private --source=. --remote=origin --push 2>&1)"; then
   URL="$(gh repo view "$FULL" --json url --jq .url 2>/dev/null || echo "https://github.com/${FULL}")"
-  echo "REGISTERED ${FULL} ${URL}"
+  echo "REGISTERED ${FULL} ${URL}"; emit_done "${URL}"
 else
   echo "PUSH_FAILED"
   printf '%s\n' "$OUT"

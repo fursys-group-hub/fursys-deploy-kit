@@ -34,7 +34,44 @@ esac
 # --no-install / --no-git 은 넣지 않는다(실사용자에겐 설치·git 초기화가 정상으로 끝나야 함).
 if OUT="$(npx @fursys/create-app@latest "$NAME" --type="$TYPE" "$FGDW" 2>&1)"; then
   echo "SCAFFOLD_OK $NAME"
-  printf '%s\n' "$OUT"
+  # 사용자 노출 완료 메시지를 스크립트가 직접 조립한다(모델은 ===SHOW===~===END=== 사이를 그대로 보여주기만 함 → 모델별 편차 제거).
+  # 빌드 원시출력($OUT)은 사용자에게 노출하지 않는다(예: .env 기술 안내를 모델이 임의로 끌어오던 문제 차단).
+  case "$TYPE" in
+    web-next)       KIND="웹 서비스" ;;
+    data-fastapi)   KIND="데이터 분석" ;;
+    dashboard-vite) KIND="경량 대시보드" ;;
+  esac
+  DEST="$(pwd)/$NAME"
+  if [ "$FGDW" = "--fgdw" ]; then
+    FGDW_LINE="- 회사 데이터 창고(fgdw): 연결됨 (읽기 전용 — 자료를 조회해서 보여주기만 가능, 저장·수정은 안 돼요)"
+    FGDW_NOTE=$'\n\n> ⚠️ **fgdw 연결 계정:** DATALink에서 발급받은 아이디와 패스워드 설정은 각자 진행해주세요. (프로젝트의 `.env` 파일에 본인 계정을 입력하면 돼요 — 파일에 안내가 적혀 있고, 배포 시 공용계정으로 자동 치환돼요.)'
+  else
+    FGDW_LINE="- 회사 데이터 창고(fgdw): 연결 안 함"
+    FGDW_NOTE=""
+  fi
+  cat <<EOF
+===SHOW===
+✅ 새 프로젝트가 만들어졌어요!
+
+**만들어진 위치**
+
+\`${DEST}\`
+- 종류: ${KIND}
+${FGDW_LINE}${FGDW_NOTE}
+
+**이제 이런 순서로 진행하시면 돼요**
+
+1. **회사 GitHub 연결** — "깃허브 연결해줘"(또는 \`/github-setup\`)라고 하시면, 회사 GitHub 연결을 확인하고(미가입이면 신청을 돕고) 이 프로젝트를 올릴 수 있게 등록해 드려요. (배포의 전제 — 코드가 회사 GitHub에 있어야 올릴 수 있어요.)
+2. **개발** — 만들어진 \`${NAME}\` 폴더에서 원하는 화면·기능을 만들어요.
+3. **배포 전 검토** — 올리기 전에 "배포 전 검토 해줘"(또는 \`/deploy-check\`)라고 하시면 점검표(HTML 리포트)를 자동으로 만들어 드려요.
+4. **배포** — "사내 서버에 올려줘"(또는 \`/deploy\`)라고 하시면 주소 앞부분만 정해서 처음 한 번 올라가요. 이후 수정은 그냥 저장하면 자동으로 다시 올라가요.
+
+> 💡 만약 자료를 저장·수정해야 한다면(예: 사용자 입력을 기록), 회사 데이터 창고(fgdw)는 읽기 전용이라 안 돼요. 별도 DB가 필요하고, 만든 뒤 이 가이드를 보고 추가하면 돼요 →
+> https://ai-library.hub.fursys.com/guides/data-db/overview
+
+다음으로 무엇을 도와드릴까요? 😊
+===END===
+EOF
 else
   echo "SCAFFOLD_FAILED"
   printf '%s\n' "$OUT"
