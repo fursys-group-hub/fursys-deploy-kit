@@ -34,7 +34,7 @@ description: 사내 GitHub(fursys-group-hub) 연결을 확인하고, 안 돼 있
 - **`NO_AUTH`** → GitHub 로그인 자체가 안 돼 있다. "먼저 GitHub 로그인이 필요해요." 안내하고, 멤버가 아닐 수도 있으니 **2) 가입 신청**도 함께 안내한다. 로그인·올리기 도구 사용법은 아래 가이드:
   > https://ai-library.hub.fursys.com/guides/push
 - **`NO_GH`** → 연결 여부를 **자동으로 확인할 도구(gh)가 없을 뿐**이다(웹 브라우저로 로그인하는 사용자 등). **여기서 "가입 안 됨"으로 단정하지 말 것 — gh가 없어도 이미 멤버일 수 있다.** 반드시 `AskUserQuestion` 으로 가입 여부를 묻는다(채팅에 텍스트로 나열하지 말고 도구 옵션으로 전달). 질문: "회사 GitHub(`fursys-group-hub`)에 이미 가입(초대 수락)돼 있나요?" — 아래 2개를 **이 순서·토씨 그대로** 옵션으로 쓴다(label=굵은 이름, description=뒤 문장):
-  - **이미 가입되어 있어요** — 회사 GitHub 초대를 이미 수락한 상태예요. (→ **3) repo 등록**으로 진행. gh가 없어 자동 생성이 안 되면 등록 스크립트가 `NEED_GH` 를 주며 수동 올리기 가이드로 안내한다.)
+  - **이미 가입되어 있어요** — 회사 GitHub 초대를 이미 수락한 상태예요. (→ **3) repo 등록**으로 진행. gh가 없어도 등록 스크립트가 회사 주소로 **push 를 시도**하고, repo가 아직 없으면 `NEED_REPO_CREATE`(1클릭 빈 repo 생성 링크)로 안내한다.)
   - **아직 가입 안 했어요** — 회사 GitHub에 아직 가입(초대 수락) 전이에요. (→ **2) 가입 신청**으로 진행.)
 
 ### 2) 가입 신청 (Slack 있으면 자동 발송 · 없으면 가이드)
@@ -72,11 +72,14 @@ description: 사내 GitHub(fursys-group-hub) 연결을 확인하고, 안 돼 있
 첫 줄 코드로 분기한다:
 - **`REGISTERED <full> <url>`** → "회사 GitHub에 올렸어요: `url`" (새로 만들어 연결·업로드 완료)
 - **`PUSHED <full>`** → "회사 GitHub에 올렸어요(이미 연결돼 있어 최신 코드만 올렸어요)."
-- **`REMOTE_MISMATCH <url>`** → 현재 폴더가 **회사 GitHub가 아닌 다른 주소**에 연결돼 있다. 함부로 바꾸지 말고 사용자에게 확인한다: "지금 이 폴더는 회사 GitHub가 아닌 다른 곳(`url`)에 연결돼 있어요. 회사 GitHub로 옮길까요? (예라고 하시면 연결을 바꿔 올릴게요.)" → 예면 origin 을 `fursys-group-hub/<이름>` 으로 바꾸도록 진행(gh 있으면 생성·재연결, 없으면 `NEED_GH` 안내).
+- **`REMOTE_MISMATCH <url>`** → 현재 폴더가 **회사 GitHub가 아닌 다른 주소**에 연결돼 있다. 함부로 바꾸지 말고 사용자에게 확인한다: "지금 이 폴더는 회사 GitHub가 아닌 다른 곳(`url`)에 연결돼 있어요. 회사 GitHub로 옮길까요? (예라고 하시면 연결을 바꿔 올릴게요.)" → 예면 origin 을 `fursys-group-hub/<이름>` 으로 바꾸도록 진행(gh 있으면 생성·재연결, 없으면 위 `NEED_REPO_CREATE` 흐름으로 안내).
 - **`NAME_TAKEN <full>`** → 회사 GitHub에 **같은 이름의 repo가 이미 있다**(본인 것이 아닐 수 있음). "그 이름은 이미 쓰이고 있어요. 다른 이름으로 할까요, 아니면 본인 repo가 맞나요? (맞으면 그 repo에 올리고, 아니면 다른 이름을 알려주세요.)"
-- **`NEED_GH <name>`** → 자동 생성 도구(gh)가 없다. 수동 안내:
-  > "코드를 올리려면 회사 GitHub에 repo를 먼저 만들어야 해요. 아래 가이드를 따라 만들고 연결하면 됩니다(보통 한 번만 하면 돼요).
-  > https://ai-library.hub.fursys.com/guides/push"
+- **`NEED_REPO_CREATE <name> <url>`** → (gh 없음 + 회사 GitHub에 아직 그 repo가 없음) 빈 비공개 저장소를 **한 번만** 만들면 자동으로 올라간다고 쉽게 안내한다. `<url>` 은 이름·소유자가 미리 채워진 새 repo 만들기 링크다:
+  > "회사 GitHub에 올릴 빈 저장소를 한 번만 만들어 주세요(1분이면 돼요).
+  > 1. 아래 주소를 열고 → 이름은 `<name>` 그대로 → **Private(비공개)** 선택 → ('Add a README' 등은 체크하지 말고) → **Create repository**
+  > <url>
+  > 2. 만든 뒤 다시 '깃허브 연결해줘'(또는 `/github-setup`)라고 하시면 코드를 **자동으로 올려드릴게요.**"
+  - 링크는 raw URL 그대로 보여준다. 직접 만들기 어려워하면 가이드도 함께: https://ai-library.hub.fursys.com/guides/push
 - **`PUSH_FAILED` / `GIT_FAILED`** → 이어지는 출력(오류)을 **그대로 보여주고** 우회·추측하지 않는다. 권한 문제로 보이면 2)의 가입/로그인 안내를 다시 권한다.
 
 ### 4) 다음 단계 안내

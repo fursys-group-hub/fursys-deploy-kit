@@ -2,7 +2,7 @@
 # 현재 폴더를 사내 GitHub(fursys-group-hub/<name>) repo 로 등록한다 — 상황 따라 자동.
 #   - git 미초기화/커밋 없음 → 초기화 + 첫 커밋
 #   - remote origin 이 이미 fursys-group-hub → push 만
-#   - remote 없음 → gh 로 비공개 repo 생성 + 연결 + push (gh 없으면 수동 안내)
+#   - remote 없음 → gh 있으면 비공개 repo 생성+연결+push / gh 없으면 org 주소로 push 시도(repo 미생성이면 1회 생성 안내)
 # 자격증명·토큰을 출력하지 않는다. 회사 코드이므로 항상 private.
 #
 # 사용: repo-register.sh <name>
@@ -11,7 +11,7 @@
 # 출력 첫 줄 코드:
 #   REGISTERED <full> <url>  새로 생성·연결·push 완료
 #   PUSHED <full>            이미 fursys-group-hub remote → push 만 함
-#   NEED_GH <name>           gh 없음 → 웹에서 직접 repo 생성 후 연결 필요(안내)
+#   NEED_REPO_CREATE <name> <url>  gh 없음 + repo 미생성 → 미리 채워진 링크로 빈 private repo 1회 생성 후 재실행하면 자동 push
 #   REMOTE_MISMATCH <url>    origin 이 fursys-group-hub 아님(다른 remote) → 사용자 확인 필요
 #   NAME_TAKEN <full>        org 에 같은 이름 repo 가 이미 있음(본인 것이 아닐 수 있음)
 #   PUSH_FAILED              push 실패(출력 이어서 표시 — 우회/추측 금지)
@@ -47,11 +47,25 @@ if [ -n "$REMOTE" ]; then
   fi
 fi
 
-# 3) remote 없음 → gh 로 생성·연결·push
+# 3) remote 없음
+# 3a) gh 없음(브라우저 인증 멤버 등): org 주소로 연결 후 push 시도.
+#   성공            → 이미 repo 있고 push 권한 있음(REGISTERED)
+#   "not found"     → repo 가 아직 없음 → 빈 repo 1회 생성 안내(NEED_REPO_CREATE). origin 은 정리해 재실행 시 같은 안내가 나오게 한다.
+#   그 외(권한 등)  → PUSH_FAILED
 if ! command -v gh >/dev/null 2>&1; then
-  echo "NEED_GH ${NAME}"
+  URL="https://github.com/${FULL}"
+  git remote add origin "${URL}.git" 2>/dev/null || git remote set-url origin "${URL}.git"
+  if OUT="$(git push -u origin HEAD 2>&1)"; then
+    echo "REGISTERED ${FULL} ${URL}"
+  elif printf '%s' "$OUT" | grep -qiE "not found|does not exist|404"; then
+    git remote remove origin 2>/dev/null
+    echo "NEED_REPO_CREATE ${NAME} https://github.com/new?owner=${ORG}&name=${NAME}"
+  else
+    echo "PUSH_FAILED"; printf '%s\n' "$OUT"
+  fi
   exit 0
 fi
+# 3b) gh 있음 → 비공개 repo 생성·연결·push
 if gh repo view "$FULL" >/dev/null 2>&1; then
   echo "NAME_TAKEN ${FULL}"   # 이미 존재 — 본인 것인지 사용자 확인 필요
   exit 0
