@@ -7,6 +7,7 @@ description: 배포 전 검토 — 보안 + 배포 가능성 두 축을 점검�
 
 - **이 스킬은 오직 `/deploy-check` 명시 호출에서만 시작한다.** "검토해줘"·"배포해도 되는지" 같은 자연어 요청만으로는 시작하지 말고 `/deploy-check` 입력을 안내한다(일상어 "검토·배포"에 의미만으로 켜지 않는다).
 - 시크릿/키 탐지·git 이력은 **0토큰 엔진(`fdh-engine`)** 이 결정적으로 처리한다. 당신은 엔진 JSON을 읽어 해석하고, 그 위에 OWASP·프레임워크·배포가능성을 LLM/Bash로 더한다. **시크릿 스캔을 여기서 중복 구현하지 말 것.**
+- **시크릿·git 이력은 엔진이 authoritative다 — 엔진이 시크릿을 pass로 판정했으면, LLM이 시크릿 finding을 새로 만들어 verdict를 강등(주의/차단)하지 않는다.** 특히 `.env` 에 실제 비밀값이 들어 있어도, 그 파일이 `.gitignore`+`.dockerignore` 로 제외되고 git 이력에도 없으면 **그게 정상이고 올바른 설정이므로 finding이 아니다**(과방어 금지 — verdict 강등·"주의" 표기·표 행 추가 모두 금지. `.env` 의 본래 용도가 로컬 비밀 보관이다). `.env` 의 비밀값은 **실제로 git에 커밋됐거나 이력에 남아 있을 때만** finding이며, 그건 엔진이 `inGitHistory` 로 잡는다.
 - 지식은 `references/` 번들에 있다. 필요한 것만 그때그때 읽는다(progressive disclosure).
 - 모든 사용자 노출 문구는 **쉬운 우리말**. "verdict·findings·env·build·runtime·locked·secret" 같은 영어 용어를 그대로 쓰지 말 것(괄호 원어 병기는 가능). 심각도는 **"치명/높음/중간/낮음"**.
 - 외부 호스팅(Vercel/Netlify/Streamlit Cloud 등)은 **언급 금지**. 사내 서버에 단일 컨테이너 + Dockerfile 전제만.
@@ -142,6 +143,7 @@ ls -1 docker-compose.yml compose.yaml 2>/dev/null  # compose 있나(구조 힌�
   스크립트 결과 코드(첫 줄): `STORED <리포트 URL>`(성공 + 추측 불가 토큰 URL → 7단계에서 그 **raw URL 을 우선 안내**, last-verdict.json `report_url` 에 기록) / `STORED`(성공, URL 없음 → 7단계에서 로컬 HTML 경로 안내) / `NO_KEY`(키 없음 → 위 건너뜀 안내, 로컬 HTML 폴백) / `NO_COMMIT`(commit 없음 → 등록 생략, 커밋·푸시 후 배포 시 등록됨을 안내) / `UNAUTHORIZED`(키 무효 → 위 401 안내, 검사 차단 안 함) / `UPLOAD_FAILED <code>`(연결 문제 → 위 실패 안내, 배포 때 재시도) / `BAD_BODY <사유>`(등록 본문이 불완전하거나 JSON이 깨짐 — **키·서버 문제가 아니다**. 표시된 사유대로 본문을 필수값(repo·commit·security·deployable·final·summary) 모두 채워 **유효한 JSON**으로 다시 만들고 등록을 1회 재시도한다. 재시도도 `BAD_BODY` 면 그 사유만 조용히 남기고 검사를 막지 않는다). 어느 경우든 6단계(HTML 리포트)는 반드시 만든다(로컬 폴백). (`$CLAUDE_PLUGIN_ROOT` 가 안 잡히면 스킬 폴더의 `scripts/verdict-upload.sh` 절대경로로 실행한다.)
 
 ## 6) HTML 리포트 생성 (조각만 만들고 스크립트가 조립 — 토큰 절감)
+- **리포트는 오직 번들 `scripts/render-report.sh` + 번들 템플릿으로만 만든다.** HTML을 직접 손으로 작성하거나 `artifact-design` 같은 다른 스킬을 불러 리포트를 만들지 말 것 — 회사 표준 리포트 형식·배지/색 규약·게이트 입력과 어긋나고 토큰만 낭비된다. 결과물은 **로컬 HTML 파일까지만**이며, **Artifact(claude.ai)로 발행하지 않는다.**
 **템플릿(CSS·레이아웃·17KB) 전체를 Read 하거나 다시 출력하지 않는다.** 대신 **동적 조각(placeholder 값)만** 담은 작은 values 파일을 Write 하고, 번들 스크립트 `scripts/render-report.sh` 가 템플릿의 `{{KEY}}` 자리에 끼워넣어 완성 HTML을 만든다. (= 템플릿 boilerplate를 LLM이 다시 토해내지 않으므로 출력 토큰이 크게 준다. 완성물은 예전 방식과 **동일**하다 — 템플릿 바이트는 손대지 않는다.) 조각은 JSON 값 + 심화 결과로 채우되 비개발자가 읽도록 한글로 해석한다. **HTML 리포트 본체는 배포 시스템에 올리지 않는다 — 로컬 HTML 파일까지만.**(구조화 검토 결과 등록은 5-2에서 이미 처리했다.)
 
 **① values 파일을 Write 한다** — 각 placeholder 블록을 `@@@FDH:KEY@@@` 구분선으로 나눈다(HTML 특수문자 escape 불필요, 여러 줄 가능). 경로는 `.fursys-deploy-hub/_render-values.txt` 권장.
