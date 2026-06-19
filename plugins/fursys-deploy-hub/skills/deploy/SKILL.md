@@ -120,7 +120,25 @@ test -f .fursys-deploy-hub/last-verdict.json && cat .fursys-deploy-hub/last-verd
 - **파일의 `commit` 이 현재 `COMMIT` 과 다르면** → "검토 이후 코드가 바뀌었어요. **'배포 전 검토'를 다시 돌려** 통과시킨 뒤 배포해주세요." **멈춘다.**
 - **`final` 이 `"ok"` 가 아니면** → "아직 통과가 아니에요(보안 차단 또는 배포 준비 미완). 리포트의 복붙 수정 프롬프트로 고친 뒤 **배포 전 검토를 다시 실행**해주세요." **멈춘다.**
   - (예외) 보안 `blocked` 가 **오탐이 확실**할 때만, 현재 코드 버전의 IT본부 예외 승인 여부를 확인해 승인됐으면 진행할 수 있다. 예외 확인·요청은 `references/exceptions.md` 를 그때 읽어 따른다(프록시 `/exceptions/check`·`/exceptions`).
-- **`final` == `"ok"` 이고 `commit` 이 현재 코드와 일치** → ⑥으로 진행한다.
+- **`final` == `"ok"` 이고 `commit` 이 현재 코드와 일치** → ⑤-1(검토 결과 등록)으로 진행한다.
+
+## ⑤-1 검토 결과 서버 등록 (배포 게이트 입력 — 등록은 여기서 한다)
+배포 게이트는 **서버에 등록된 검토 기록**을 본다. 등록은 **배포 전 검토(deploy-check)가 아니라 이 단계에서** 한다 — 배포 키가 ②에서 이미 확보돼 있고, "배포" 맥락이라 외부 전송이 정상 처리되기 때문이다. ⑤에서 읽은 `last-verdict.json` 의 값과 검토가 남긴 산출물(`_engine.json`·`_report-data.json`)로 등록한다. **본문 JSON 을 손으로 쓰지 않는다 — 빌더가 산출물에서 기계 조립한다.**
+```bash
+RR="$CLAUDE_PLUGIN_ROOT/skills/security-review"   # 안 잡히면: RR="$(find "$HOME/.claude/plugins" -path '*/fursys-deploy-hub/skills/security-review' -type d 2>/dev/null | head -1)"
+# <SEC>/<DEP>/<FIN> = ⑤에서 읽은 last-verdict.json 의 security / deployable / final 값 그대로
+"$RR/scripts/verdict-build.sh" ".fursys-deploy-hub/_engine.json" "fursys-group-hub/<REPO>" "$COMMIT" "<SEC>" "<DEP>" "<FIN>" \
+  --report-data ".fursys-deploy-hub/_report-data.json" \
+  | "$RR/scripts/verdict-upload.sh" "fursys-group-hub/<REPO>" "$COMMIT"
+```
+첫 줄 결과 코드로 분기한다:
+- **`STORED <리포트 URL>`** 또는 **`STORED`** → 등록 완료. ⑥으로 진행한다. (URL 이 있으면 ⑧ 마무리에서 "검토 리포트: `<URL>`" 로 함께 안내한다.)
+- **`NO_KEY`** → ②(키 입력)로 보낸 뒤, 키 저장 후 이 단계부터 다시.
+- **`NO_COMMIT`** → 커밋·푸시가 안 된 상태다. `/github-setup`(또는 `git push`)을 안내하고 멈춘다.
+- **`UNAUTHORIZED`** → "배포 키가 유효하지 않거나 회수됐어요. IT본부에 재발급을 요청하세요." 멈춘다(저장된 키 파일 삭제 안내).
+- **`UPLOAD_FAILED <code>`** → "검토 결과를 서버에 등록하지 못했어요(연결 문제). 잠시 후 다시 시도해 주세요." **멈춘다**(등록 없이는 서버 게이트가 막으므로 배포로 진행하지 않는다).
+- **`BAD_BODY <사유>`** → 검토 산출물이 불완전하다. "**'배포 전 검토 해줘'(`/deploy-check`)를 다시 한 번** 실행한 뒤 배포해 주세요." 멈춘다.
+- (멀티서비스여도 등록은 repo 단위 1회면 충분하다.)
 
 ## ⑥ 생성·배포 실행 (deploy.sh → POST /apps + 폴링)
 번들 스크립트로 생성·배포하고 상태를 폴링한다. 키·전송 대상 가드·폴링은 스크립트가 처리한다.
@@ -159,9 +177,8 @@ printf '%s' "$ENV_JSON" | "$CLAUDE_PLUGIN_ROOT/skills/deploy/scripts/deploy.sh" 
 - **`FORBIDDEN`(403)**: "이 브랜드/공간에 올릴 권한이 없어요. IT본부에 등록을 요청하세요."
 - **`NAME_TAKEN`(409 name_taken)**: 그 **주소 앞부분(이름)을 다른 분이 이미 쓰고 있어요**(같은 이름의 다른 앱이라 안전을 위해 막았어요). "**다른 앞부분으로 다시 시도**해 주세요. 본인 앱이 맞는데도 이게 뜨면 IT본부에 문의하세요." (남의 앱은 다시 배포할 수 없어요 — 안전장치입니다. 앱은 만들어지지 않았다.)
 - **`ALREADY_EXISTS`(409, error 없음)**: (하위호환 잔존 — 정상 재시도 경로에선 더 이상 나오지 않는다. 옛 서버/잔존 코드로 떠도 기존 안내를 유지한다.) **이미 만들어진 앱**이에요. "**이후 수정은 새로 만들 필요 없이 그냥 `git push` 하면 자동으로 다시 배포됩니다.**" (에러 아님)
-- **`GATE_NO_VERDICT`(409 no_verdict)**: **서버가 배포를 막았어요.** "이 버전은 아직 **배포 전 검토를 통과한 기록이 없어요.** '배포 전 검토'를 먼저 돌려 통과시킨 뒤 다시 배포해주세요." (앱은 만들어지지 않았다.)
-- **`GATE_BLOCKED`(409 verdict_blocked)**: **서버가 배포를 막았어요.** "최근 검토에서 **통과하지 못한 버전이에요.** 리포트의 복붙 수정 프롬프트로 고친 뒤 검토를 다시 통과시키고 배포해주세요." (앱은 만들어지지 않았다.)
-  - (참고) `GATE_NO_VERDICT`/`GATE_BLOCKED` 는 ⑤ 로컬 확인을 건너뛰었거나, 검토 뒤 코드가 바뀌어 통과 기록과 어긋날 때 서버가 최종적으로 막는 경우다. 둘 다 **'배포 전 검토 해줘'를 (다시) 실행해 통과**시키면 풀린다.
+- **`GATE_NO_VERDICT`(409 no_verdict)**: 서버에 등록 기록이 없다. 보통 ⑤-1 등록이 처리하므로 드물다(⑤-1 을 건너뛰었거나 등록이 누락된 경우). **로컬에 `last-verdict.json`(final=ok·commit 일치)·`_engine.json` 이 있으면 → ⑤-1(검토 결과 등록)을 실행해 등록한 뒤 ⑥을 1회 재시도**한다. 산출물이 없으면(검토를 안 돌림) "먼저 '배포 전 검토 해줘'(`/deploy-check`)를 실행해 주세요." 안내하고 멈춘다. (앱은 만들어지지 않았다 — deploy-check↔deploy 를 무한히 오가게 안내하지 말 것: 등록은 ⑤-1 이 한다.)
+- **`GATE_BLOCKED`(409 verdict_blocked)**: **서버가 배포를 막았어요.** "최근 검토에서 **통과하지 못한 버전이에요.** 리포트의 복붙 수정 프롬프트로 고친 뒤 **'배포 전 검토'를 다시 돌려 통과**시키고 배포해주세요." (앱은 만들어지지 않았다.)
 - **`PROXY_ERROR 502`**: "배포 중 오류가 났어요. 잠시 후 다시 시도하고, 계속되면 IT본부에 문의하세요."
 - **`PROXY_ERROR <기타>`** / **`NO_KEY`**: NO_KEY 면 ②로(키 입력), 그 외는 응답 내용을 보여주고 IT본부 문의를 안내한다.
 

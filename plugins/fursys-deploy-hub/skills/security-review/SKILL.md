@@ -15,21 +15,6 @@ description: 배포 전 검토 — 보안 + 배포 가능성 두 축을 점검�
 
 ---
 
-## 0) 배포 키 확인 (없으면 즉시 중단 — 엔진 실행보다 먼저)
-배포 전 검토는 결과를 배포 시스템에 **등록**해야 의미가 있고, 등록에는 **배포 키**가 필요하다. 키 없이 전체 검토를 다 돌린 뒤 끝에서야 "등록 못 했다"고 하면 헛수고다. 따라서 **엔진·심화 점검·리포트 생성을 시작하기 전에 키부터 확인**한다(fail-fast).
-```bash
-"$CLAUDE_PLUGIN_ROOT/skills/deploy/scripts/key-status.sh"
-```
-- 이 스크립트는 플러그인 번들이다(현재 폴더에 없는 게 정상 — cwd에서 찾거나 되묻지 말 것). `$CLAUDE_PLUGIN_ROOT` 가 비면 플러그인 설치 경로에서 찾아 실행:
-  ```bash
-  KS="$(find "$HOME/.claude/plugins" -path '*/fursys-deploy-hub/skills/deploy/scripts/key-status.sh' 2>/dev/null | head -1)"; "$KS"
-  ```
-- 첫 줄이 **`NO_KEY`** → **여기서 멈춘다(엔진을 실행하지 않는다).** 아래를 그대로 안내하고 종료:
-  > "배포 전 검토는 결과를 배포 시스템에 등록해야 해서 **배포 키가 먼저 필요해요.**
-  > - 키가 아직 없으면 → `/get-key` 로 발급을 신청해요.
-  > - 이미 받았으면 → `/set-key` 로 등록한 뒤, 다시 `/deploy-check` 를 실행해 주세요."
-- 그 외(`KEY_FILE`/`KEY_ENV`/`KEY_BOTH`) → 키 있음. 1)로 진행한다. (키 값·앞부분을 굳이 출력하지 않는다.)
-
 ## 1) 대상 확정
 - 검사 대상 경로를 정한다(기본: **현재 프로젝트 루트**). 사용자가 경로/repo를 줬으면 그것을 쓴다. 굳이 매번 되묻지 않는다.
 
@@ -39,7 +24,7 @@ mkdir -p .fursys-deploy-hub
 fdh-engine "<대상경로>" --json --no-prompt > .fursys-deploy-hub/_engine.json
 ```
 - `fdh-engine` 은 이 플러그인 `bin/` 에 번들된 단일 실행 파일로, 플러그인 활성화 시 PATH에 자동 등록된다(별도 설치 불필요).
-- 결과 JSON 을 `.fursys-deploy-hub/_engine.json` 에 저장한다(`contracts/security-verdict.schema.json` 형식). 이 파일을 읽어 해석하고, **5-2 등록 때 빌더가 이 파일을 그대로 다시 써서 본문을 만든다(손 조립 방지).** stderr는 로그.
+- 결과 JSON 을 `.fursys-deploy-hub/_engine.json` 에 저장한다(`contracts/security-verdict.schema.json` 형식). 이 파일을 읽어 해석하고, **나중에 `/deploy`(⑤-1) 등록 때 빌더가 이 파일을 그대로 다시 써서 본문을 만든다(손 조립 방지).** stderr는 로그.
 - exit code: 0=pass, 1=caution, 2=blocked.
 - **엔진이 안 돌면 그 사실을 알리고 멈춘다(임의 판단 금지).**
 
@@ -108,7 +93,7 @@ ls -1 docker-compose.yml compose.yaml 2>/dev/null  # compose 있나(구조 힌�
     "deployable": true,
     "final": "ok|blocked",
     "report": "<6단계에서 만든 html 상대경로>",
-    "report_url": "<5-2 등록 성공 시 board 가 돌려준 리포트 URL, 없으면 생략>",
+    "report_url": "<검토 단계에선 보통 생략 — /deploy 등록 성공 시 URL 이 만들어진다>",
     "generated_at": "<NOW>",
     "env_plan": [
       { "name": "<설정값 이름>", "class": "build|runtime|locked", "note": "fgdw|secret-gen|ask|public-url|''" }
@@ -118,33 +103,21 @@ ls -1 docker-compose.yml compose.yaml 2>/dev/null  # compose 있나(구조 힌�
   - `security` = 보안 축 결과(통과=`pass`/주의=`caution`/차단=`blocked`), `deployable` = 배포가능 축(가능=`true`/불가=`false`).
   - **`env_plan` = 엔진 `envVars`(name·class) + 4)·심화에서 파악한 처리 메모.** 배포 단계가 코드를 다시 안 뒤지도록 **여기서 미리 채운다**(속도). `note` 규칙: fgdw 계정/비번=`fgdw`(배포 시 공용계정 자동치환), 난수 자동생성 대상(JWT_SECRET 등)=`secret-gen`, 사람이 정할 값/외부 자격증명=`ask`, NEXT_PUBLIC_*·VITE_* 공개주소=`public-url`, 그 외 일반값=`''`. 분류 기준은 `references/env-resolve.md`(deploy 와 동일 규칙)와 owasp/framework 점검 결과를 그대로 반영한다.
   - `branch` 도 함께 적어, deploy 가 브랜치를 재확인하지 않게 한다(deploy.sh 가 자체 해석도 하지만 기록을 남긴다).
-  - `report_url` 은 5-2 등록 결과를 받은 뒤 채운다(등록이 `STORED <url>` 로 URL 을 돌려줬을 때만). 등록 전/URL 없음이면 이 필드를 생략한다(로컬 전용 기록 — 배포 게이트와 무관).
+  - `report_url` 은 검토 단계에선 **생략**한다(서버 등록은 `/deploy` 가 하므로). /deploy(⑤-1) 등록에서 URL 을 받으면 그때 사용자에게 안내된다.
 
-## 5-2) 검토 결과를 배포 시스템에 등록 (구조화 데이터 업로드 — 서버 배포 게이트 입력)
-`last-verdict.json`(5-1) 기록 직후, **검토 결과를 사내 배포 시스템에 구조화 형태로 등록**한다. 이 등록 기록이 배포 단계의 **진짜 게이트**다 — 등록된 검토를 통과한 코드만 실제로 배포된다(클라이언트의 `last-verdict.json`은 빠른 안내용일 뿐, 서버가 최종 강제).
-- **등록하는 것은 구조화 검토 데이터뿐이다. HTML 리포트 본체는 올리지 않는다(로컬 파일까지만).**
-- 등록은 **중앙 배포 프록시(`POST /verdict`)** 한 곳만 부른다(내부 시스템 직접 호출 금지, 내부 비밀값 불필요).
-- **개인 배포 키**가 있을 때만 등록한다. 키는 `FURSYS_PROXY_KEY` 환경변수 우선, 없으면 `~/.fursys/proxy-key`(Windows: `%USERPROFILE%\.fursys\proxy-key`) 이 두 곳만 본다.
-  - **키가 없으면 등록을 건너뛴다**(검사 자체는 멈추지 않는다). 사용자에게: "검토는 마쳤어요(HTML 리포트 생성). 다만 **아직 배포 키가 없어 검토 결과를 배포 시스템에 등록하진 못했어요.** 배포 게이트는 *등록된* 검토 기록을 보므로, **배포 키를 받은 뒤('배포해줘'를 한 번 실행하면 키를 입력하게 됩니다) → '배포 전 검토'를 다시 한 번 실행**해 주세요. 그때 등록됩니다." 라고 안내한다. **⚠️ 배포(`deploy`) 자체는 검토 결과를 등록하지 않는다 — 등록은 반드시 이 검토 단계에서 키가 있을 때 일어난다. "배포할 때 자동 등록된다"고 안내하지 말 것(무한 루프 유발).**
-  - 등록은 시도했으나 **네트워크 등으로 실패**하면: "검토 결과를 배포 시스템에 등록하지 못했어요(연결 문제). 배포할 때 다시 시도됩니다." 안내(검사 결과·로컬 리포트는 이미 남았으니 차단하지 않는다).
-- **등록 본문은 빌더가 기계 조립한다(VerdictBody JSON 을 손으로 쓰지 않는다):** 위험한 값(findings 의 한글·따옴표·경로)은 2단계에서 저장한 `.fursys-deploy-hub/_engine.json` 에서 빌더(`scripts/verdict-build.sh`)가 그대로 싣고, 너는 작은 스칼라(보안/배포가능/최종)만 넘긴다. 빌더 출력(유효 VerdictBody JSON)을 **그대로 `verdict-upload.sh` 의 stdin** 으로 파이프한다. 두 스크립트가 키 확보·정규화·전송 대상 가드·사전검증·`POST /verdict` 를 처리한다. (시크릿 본체 금지 — 엔진 마스킹 형태만 실린다. 상세는 `references/verdict-upload.md`.)
-- **리포트 조각(report_data)도 빌더가 싣는다 — JSON 을 손으로 본문에 박지 않는다:** 6단계에서 만들 리포트 조각(배지/최종라인/owaspFindings/deployChecks/prompts/envNotes)을 **구조화 JSON 파일 `.fursys-deploy-hub/_report-data.json` 으로 미리 Write** 한다(스키마는 6단계 끝의 "_report-data.json" 설명 참조). 그러면 등록 성공 시 board 가 **추측 불가 토큰 리포트 URL** 을 돌려준다(사용자에게 우선 안내). 이 파일이 없거나 깨져도 등록은 막히지 않는다(빌더가 무시하고 report_data 없이 진행 = 로컬 HTML 폴백). **엔진 파트(summary/findings/env_vars/engine_verdict)는 _report-data.json 에 넣지 말 것**(board 가 저장된 엔진 컬럼으로 렌더 — 중복 금지).
-  ```bash
-  ROOT="$CLAUDE_PLUGIN_ROOT/skills/security-review"   # 안 잡히면 스킬 폴더 절대경로로 대체
-  REPO_NAME=$(basename -s .git "$(git config --get remote.origin.url 2>/dev/null)")
-  REPO="fursys-group-hub/${REPO_NAME}"
-  COMMIT=$(git rev-parse HEAD 2>/dev/null || echo "")
-  # <SECURITY>=pass|caution|blocked, <DEPLOYABLE>=true|false, <FINAL>=ok|blocked (5-1 과 동일 값)
-  "$ROOT/scripts/verdict-build.sh" ".fursys-deploy-hub/_engine.json" "$REPO" "$COMMIT" "<SECURITY>" "<DEPLOYABLE>" "<FINAL>" \
-    --report-data ".fursys-deploy-hub/_report-data.json" \
-    | "$ROOT/scripts/verdict-upload.sh" "$REPO" "$COMMIT"
-  ```
-  - `<SECURITY>`·`<DEPLOYABLE>`·`<FINAL>` 자리에 5-1 에서 정한 값만 그대로 넣는다. 나머지 본문 필드(summary·findings·framework·env_vars·engine_verdict)는 빌더가 엔진 JSON 에서 자동으로 채우고, `report_data` 는 `--report-data` 파일에서 채운다 — **VerdictBody JSON 을 직접 작성하지 말 것.**
-  스크립트 결과 코드(첫 줄): `STORED <리포트 URL>`(성공 + 추측 불가 토큰 URL → 7단계에서 그 **raw URL 을 우선 안내**, last-verdict.json `report_url` 에 기록) / `STORED`(성공, URL 없음 → 7단계에서 로컬 HTML 경로 안내) / `NO_KEY`(키 없음 → 위 건너뜀 안내, 로컬 HTML 폴백) / `NO_COMMIT`(commit 없음 → 등록 생략, 커밋·푸시 후 배포 시 등록됨을 안내) / `UNAUTHORIZED`(키 무효 → 위 401 안내, 검사 차단 안 함) / `UPLOAD_FAILED <code>`(연결 문제 → 위 실패 안내, 배포 때 재시도) / `BAD_BODY <사유>`(등록 본문이 불완전하거나 JSON이 깨짐 — **키·서버 문제가 아니다**. 표시된 사유대로 본문을 필수값(repo·commit·security·deployable·final·summary) 모두 채워 **유효한 JSON**으로 다시 만들고 등록을 1회 재시도한다. 재시도도 `BAD_BODY` 면 그 사유만 조용히 남기고 검사를 막지 않는다). 어느 경우든 6단계(HTML 리포트)는 반드시 만든다(로컬 폴백). (`$CLAUDE_PLUGIN_ROOT` 가 안 잡히면 스킬 폴더의 `scripts/verdict-upload.sh` 절대경로로 실행한다.)
+## 5-2) 검토 산출물 저장 (배포 시 등록용 — 업로드는 deploy 가 한다)
+**이 단계에서 검토 결과를 서버로 업로드하지 않는다.** 서버 등록(배포 게이트 입력)은 **`/deploy` 의 ⑤-1 단계에서** 일어난다 — 배포 키가 그때 확보되고, "배포" 맥락이라 외부 전송이 정상 처리되기 때문이다(검토 맥락에서 외부 POST를 시도하면 클라이언트 보안 게이트가 막아 헛수고가 된다). 여기서는 deploy 가 등록에 쓸 **산출물만 로컬에 남긴다**:
+- `.fursys-deploy-hub/_engine.json` — 2단계 엔진 출력(이미 있음).
+- `.fursys-deploy-hub/last-verdict.json` — 5-1에서 기록(security·deployable·final·commit 포함).
+- **`.fursys-deploy-hub/_report-data.json`** — 리포트 조각(배지/최종라인/owaspFindings/deployChecks/prompts/envNotes)을 **구조화 JSON 으로 Write** 한다(스키마는 6단계 끝의 "_report-data.json" 설명 참조). 이 파일을 deploy 가 등록 시 그대로 실어 board 토큰 리포트 URL 을 받는다. **엔진 파트(summary/findings/env_vars/engine_verdict)는 넣지 말 것**(board 가 엔진 컬럼으로 렌더 — 중복 금지). 없거나 깨져도 등록은 막히지 않는다(report_data 없이 진행 = 로컬 HTML 폴백).
+
+→ 사용자에게: **"검토를 마쳤어요(HTML 리포트 생성). 이 결과는 `/deploy` 할 때 서버에 자동 등록되고 배포돼요."** 라고 안내한다.
+- **⚠️ 검토 단계에서 배포 키를 요구하거나 차단하지 않는다 — 키 확인·서버 등록은 모두 `/deploy` 의 일이다.** ("검토하려면 키가 필요하다"고 말하지 말 것.)
+- **⚠️ 등록은 deploy 가 한다 — 여기서 `verdict-upload.sh` 를 직접 호출하지 않는다.** (빌더/업로더 호출 방법·결과 코드 계약은 `deploy` 스킬 ⑤-1 에 있다. 상세 본문 스키마는 `references/verdict-upload.md`.)
 
 ## 6) HTML 리포트 생성 (조각만 만들고 스크립트가 조립 — 토큰 절감)
 - **리포트는 오직 번들 `scripts/render-report.sh` + 번들 템플릿으로만 만든다.** HTML을 직접 손으로 작성하거나 `artifact-design` 같은 다른 스킬을 불러 리포트를 만들지 말 것 — 회사 표준 리포트 형식·배지/색 규약·게이트 입력과 어긋나고 토큰만 낭비된다. 결과물은 **로컬 HTML 파일까지만**이며, **Artifact(claude.ai)로 발행하지 않는다.**
-**템플릿(CSS·레이아웃·17KB) 전체를 Read 하거나 다시 출력하지 않는다.** 대신 **동적 조각(placeholder 값)만** 담은 작은 values 파일을 Write 하고, 번들 스크립트 `scripts/render-report.sh` 가 템플릿의 `{{KEY}}` 자리에 끼워넣어 완성 HTML을 만든다. (= 템플릿 boilerplate를 LLM이 다시 토해내지 않으므로 출력 토큰이 크게 준다. 완성물은 예전 방식과 **동일**하다 — 템플릿 바이트는 손대지 않는다.) 조각은 JSON 값 + 심화 결과로 채우되 비개발자가 읽도록 한글로 해석한다. **HTML 리포트 본체는 배포 시스템에 올리지 않는다 — 로컬 HTML 파일까지만.**(구조화 검토 결과 등록은 5-2에서 이미 처리했다.)
+**템플릿(CSS·레이아웃·17KB) 전체를 Read 하거나 다시 출력하지 않는다.** 대신 **동적 조각(placeholder 값)만** 담은 작은 values 파일을 Write 하고, 번들 스크립트 `scripts/render-report.sh` 가 템플릿의 `{{KEY}}` 자리에 끼워넣어 완성 HTML을 만든다. (= 템플릿 boilerplate를 LLM이 다시 토해내지 않으므로 출력 토큰이 크게 준다. 완성물은 예전 방식과 **동일**하다 — 템플릿 바이트는 손대지 않는다.) 조각은 JSON 값 + 심화 결과로 채우되 비개발자가 읽도록 한글로 해석한다. **HTML 리포트 본체는 배포 시스템에 올리지 않는다 — 로컬 HTML 파일까지만.**(구조화 검토 결과의 서버 등록은 검토가 아니라 `/deploy`(⑤-1)가 한다.)
 
 **① values 파일을 Write 한다** — 각 placeholder 블록을 `@@@FDH:KEY@@@` 구분선으로 나눈다(HTML 특수문자 escape 불필요, 여러 줄 가능). 경로는 `.fursys-deploy-hub/_render-values.txt` 권장.
 - **문제가 없어 비울 placeholder(예: 프롬프트 없음)도 구분선은 넣고 내용만 비운다** — 그래야 토큰이 빈 값으로 치환된다(구분선 자체를 빠뜨리면 `{{KEY}}` 가 그대로 남는다).
@@ -172,7 +145,7 @@ TS=$(date '+%Y%m%d-%H%M')
 - 첫 줄이 `RENDERED <경로>` 면 성공 — 그 경로를 7단계에서 안내한다. `NO_VALUES`/`NO_TEMPLATE` 면 원인을 알리고 멈춘다(임의로 HTML을 손으로 쓰지 말 것). (`$CLAUDE_PLUGIN_ROOT` 가 안 잡히면 스킬 폴더의 절대경로로 실행.)
 - `last-verdict.json`(5-1)의 `report` 필드에 이 HTML 경로를 적는다.
 
-**③ 같은 조각을 구조화 JSON `.fursys-deploy-hub/_report-data.json` 으로도 Write 한다(5-2 서버 리포트용).** 로컬 HTML 의 placeholder 와 **같은 내용**을 board 서버 렌더(`/report/<token>`)도 쓰도록, ①의 placeholder 조각을 그대로 구조화 값으로 옮긴 것이다. **HTML 태그 없이 값만** 담는다(board 가 자기 템플릿으로 렌더). 이 파일은 5-2 빌더의 `--report-data` 로 실린다. 없거나 깨져도 등록은 진행되며(로컬 HTML 폴백) URL 만 안 나온다.
+**③ 같은 조각을 구조화 JSON `.fursys-deploy-hub/_report-data.json` 으로도 Write 한다(deploy 서버 등록용).** 로컬 HTML 의 placeholder 와 **같은 내용**을 board 서버 렌더(`/report/<token>`)도 쓰도록, ①의 placeholder 조각을 그대로 구조화 값으로 옮긴 것이다. **HTML 태그 없이 값만** 담는다(board 가 자기 템플릿으로 렌더). 이 파일은 `/deploy`(⑤-1) 등록 때 빌더의 `--report-data` 로 실린다. 없거나 깨져도 등록은 진행되며(로컬 HTML 폴백) URL 만 안 나온다.
   - **엔진 파트는 넣지 않는다**(summary·findings·env_vars·engine_verdict 는 board 가 저장된 엔진 컬럼으로 렌더 — 중복·재전송 금지). 여기엔 **엔진에 없는 LLM/배포준비 산출물만**.
   - **시크릿 평문 금지**(엔진 마스킹 형태만). prompts/owaspFindings 에 키·비번 값 그대로 넣지 말 것.
   - placeholder ↔ _report-data.json 필드 1:1 매핑(이 매핑은 board 서버 렌더에도 동일하게 적용된다):
@@ -205,9 +178,9 @@ TS=$(date '+%Y%m%d-%H%M')
 4. **설정값 정리표** — 이름(`name`)·다루는 방법·설명. 영어 분류명(`class`) 노출 금지. 다루는 방법: `build`="화면(브라우저)에 포함될 수 있음 → 비밀번호·키 넣지 말 것", `runtime`="서버에서만 쓰는 일반 값", `locked`="비밀번호·키 → 안전하게 잠가서 보관(화면 노출 금지)".
 
 ## 7) 결과 안내 (한글, 쉬운 말)
-**리포트를 어디서 보여줄지 — 5-2 등록 결과로 분기한다:**
-- 5-2 가 `STORED <리포트 URL>` 이면 → **그 URL 을 우선 안내**한다. "리포트는 여기서 보실 수 있어요: <URL>" 처럼 **URL 을 raw 그대로** 적는다(`[한글](url)` 같은 하이퍼링크 금지). 로컬 HTML 파일 경로도 보조로 함께 알린다(오프라인 폴백). last-verdict.json `report_url` 에도 그 URL 을 기록한다(5-1).
-- 그 외(`STORED`(URL 없음)·`NO_KEY`·`NO_COMMIT`·`UNAUTHORIZED`·`UPLOAD_FAILED`·`BAD_BODY`) → **로컬 HTML 파일 경로를 안내**한다(서버 리포트 URL 은 없음). 각 코드별 안내 문구는 5-2 참조.
+**리포트 안내 — 검토 단계에선 로컬 HTML 경로를 안내한다:**
+- 검토는 서버 등록을 하지 않으므로(등록은 `/deploy` ⑤-1) 여기서는 **로컬 HTML 파일 경로**를 안내한다: "리포트는 여기서 보실 수 있어요: `<로컬 경로>`" (링크/경로는 raw 그대로, 한글 하이퍼링크 금지).
+- **서버 토큰 리포트 URL 은 `/deploy` 로 배포할 때 등록되면 그때 안내된다**(검토 단계에선 아직 없음). 함께 한 줄로 알린다: "이 결과는 `/deploy` 할 때 서버에 등록되고, 그때 온라인 리포트 주소도 만들어져요."
 - **로컬 HTML 은 어느 경우든 6단계에서 항상 만든다**(폴백). URL 안내는 그 위에 얹는 것뿐이다.
 
 생성한 HTML **파일 경로**를 알려주고 브라우저로 열어 확인하도록 안내한다. 두 축을 **각각** 전하고 최종 배포 가능 여부를 말한다.
@@ -220,7 +193,7 @@ TS=$(date '+%Y%m%d-%H%M')
   - 둘 다 막힘 → 두 가지 모두 안내하고 각각의 복붙 프롬프트로 고친 뒤 재검토 안내.
 
 ## 금지
-- HTML 리포트 본체를 배포 시스템에 올리지 않는다(리포트는 로컬 HTML까지만). 다만 **구조화 검토 결과는 프록시 `/verdict` 로 등록한다**(5-2, 배포 게이트 입력).
+- HTML 리포트 본체를 배포 시스템에 올리지 않는다(리포트는 로컬 HTML까지만). 구조화 검토 결과의 서버 등록(프록시 `/verdict`)은 검토가 아니라 **`/deploy`(⑤-1)** 가 한다(배포 게이트 입력).
 - 엔진 결과 없이 보안/배포 가능 여부를 임의로 단정하지 않는다.
 - 시크릿 본체(평문 키 값)를 리포트/화면에 그대로 출력하지 않는다(엔진 마스킹 형태를 따른다).
 - 외부 호스팅 가이드·인계 메시지·사내 호스팅 관리화면 수동 입력 단계는 만들지 않는다(플러그인은 자동 배포).
