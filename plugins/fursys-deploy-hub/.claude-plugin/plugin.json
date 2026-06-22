@@ -1,7 +1,7 @@
 {
   "name": "fursys-deploy-hub",
   "displayName": "Fursys Deploy Hub",
-  "version": "3.13.29",
+  "version": "3.13.30",
   "description": "사내 서버 프로젝트 생성·GitHub 연결·배포 전 검토·최초 배포. /create-app(새 프로젝트) → /github-setup(회사 GitHub 연결·repo 등록) → /deploy-check(배포 전 검토: 보안+배포가능성, HTML 리포트) → /deploy(사내 서버 최초 배포, 이후 git push 자동 재배포) · /my-apps(내 앱 보기) · /my-key·/set-key(배포 키 확인·등록). 커맨드+스킬+번들 스크립트 구조. 개인 키만 사용하며 사내 호스팅 자격증명은 절대 클라이언트에 노출되지 않는다.",
   "author": {
     "name": "Fursys IT본부 AI추진팀",
