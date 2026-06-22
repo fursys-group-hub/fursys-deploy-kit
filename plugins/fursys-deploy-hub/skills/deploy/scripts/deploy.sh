@@ -149,12 +149,13 @@ case "$HTTP" in
     # 폴링 중 호출측 타임아웃 등으로 강제 종료(SIGTERM/INT)되어도 "앱은 이미 생성됨"을 알 수 있게
     # 폴백 한 줄을 남긴다(이게 없으면 출력이 통째로 유실돼, 운영자가 생성 사실을 모르고 중복 배포하는 사고로 이어진다).
     trap 'printf "STILL_BUILDING %s %s\n" "$APP_ID" "$DOMAIN"' TERM INT
-    # 상태 폴링: 10초 간격 × 8회(~80초). 호출측 기본 타임아웃(2분) 안에 **반드시 끝나** 최종 상태
-    # (RUNNING/DEPLOY_FAILED/PENDING)를 출력한다. 더 오래 걸리면 PENDING 으로 끝내고, 호출측이
-    # logs.sh/my-apps 로 이어서 확인한다(긴 블로킹 폴링이 출력 유실을 일으키지 않게).
+    # 상태 폴링: 30초 간격 × 4회(~120초). 호출측 기본 타임아웃(2분)에 근접하므로, 폴링이 그 안에
+    # 끝나면 최종 상태(RUNNING/DEPLOY_FAILED/PENDING)를 출력하고, 초과로 강제 종료되면 위 TERM/INT
+    # 트랩이 STILL_BUILDING(안전 — 앱은 이미 생성됨·재배포 금지)을 남겨 출력 유실(중복배포 사고)을 막는다.
+    # 더 오래 걸리면 PENDING 으로 끝내고, 호출측이 logs.sh/my-apps 로 이어서 확인한다.
     # CREATED/REDEPLOYED 공통(REDEPLOY_WEBHOOK 은 위에서 이미 종료).
-    for _ in $(seq 1 8); do
-      sleep 10
+    for _ in $(seq 1 4); do
+      sleep 30
       SRESP="$(curl -sS "$PROXY_URL/apps/$APP_ID/status" -H "X-Proxy-Key: $KEY" 2>/dev/null || true)"
       STATUS="$(printf '%s' "$SRESP" | grep -oE '"status"[[:space:]]*:[[:space:]]*"[^"]*"' | head -n1 | sed -E 's/.*:[[:space:]]*"([^"]*)"/\1/')"
       case "$STATUS" in
