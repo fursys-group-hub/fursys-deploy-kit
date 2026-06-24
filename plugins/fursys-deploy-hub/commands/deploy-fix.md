@@ -7,7 +7,10 @@ description: 배포 전 검토에서 나온 문제를 확인 후 자동으로 �
 **반드시 `deploy-fix` 스킬을 로드해, 그 안의 절차를 순서대로 한 글자도 빼지 말고 따른다.** 이 커맨드 본문에서 절차를 요약·재구성하지 말 것 — 아래는 위임 규칙일 뿐이다:
 
 - 이 스킬은 **오직 `/deploy-fix` 명시 호출에서만** 동작한다. "고쳐줘"·"문제 해결해줘" 같은 자연어만으로는 절대 시작하지 말고, 그런 요청에는 `/deploy-fix` 입력을 안내한다.
-- 수정할 문제는 **`.fursys-deploy-hub/_engine.json` 의 findings(정본)** 와 **`last-verdict.json` 의 commit** 에서 읽는다. **`.md` 리포트를 파싱해 finding 을 복원하지 않는다.**
+- **두 모드가 있다 — 스킬의 ⓪ 모드 판별을 그대로 따른다:**
+  - **검토 수정(기본, 인자 없음):** `.fursys-deploy-hub/_engine.json` 의 findings(정본) + `last-verdict.json` 의 commit 에서 읽어 고친 뒤 `/deploy-check` 로 재검증.
+  - **빌드 실패 수정(`/deploy-fix --from-deploy-failure <app_id>`):** deploy 가 빌드 실패에서 위임하는 경로. 정본은 **빌드로그**(`logs.sh <app_id>`)이며 `deploy-failure-playbook.md` 로 진단한다. 고친 뒤 **git push 재배포 → status.sh 재폴링**으로 재검증한다(재-POST 금지). 인자 없이 직접 호출했는데 방금 올리다 막힌 앱이 감지되면, 어느 모드인지 한 번 확인한다.
+- 수정할 문제(검토 수정 모드)는 **`.fursys-deploy-hub/_engine.json` 의 findings(정본)** 와 **`last-verdict.json` 의 commit** 에서 읽는다. **`.md` 리포트를 파싱해 finding 을 복원하지 않는다.** 빌드 실패 모드는 `_engine.json` 이 아니라 빌드로그가 정본이다.
 - **확인 전 코드 수정 금지.** `AskUserQuestion` 으로 확인받은 뒤에만 고친다. 수정 직전 안전 스냅샷을 만들고, 사용자에겐 "원래대로 되돌릴 수 있어요"라고만 안내한다(git 용어 비노출).
 - 사람만 아는 값(관리자 비밀번호 등)·외부 자격증명은 **자동수정하지 않고 안내만** 한다.
 - 시크릿(키·비밀번호) 값은 화면·로그에 출력하지 않는다.

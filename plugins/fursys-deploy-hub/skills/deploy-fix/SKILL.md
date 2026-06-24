@@ -12,7 +12,22 @@ description: 배포 전 검토(`/deploy-check`)에서 나온 문제를 확인 �
 
 ---
 
-## ① 검토 산출물 로드 (정본만 읽는다 — `.md` 파싱 금지)
+## ⓪ 모드 판별 (두 모드 — 공유 머신: 요약→확인→수정→재검증)
+이 스킬은 **두 가지 입력 모드**를 갖는다. 어느 모드인지 먼저 정한다.
+
+| 모드 | 입력 정본 | 재검증 | 진입 |
+|---|---|---|---|
+| **A. 검토 수정**(기존) | `_engine.json` findings + `last-verdict.json` commit | `/deploy-check`(security-review) 재실행 | `/deploy-fix`(인자 없음) |
+| **B. 빌드 실패 수정**(신규) | **`logs.sh <app_id>` 빌드로그** + `references/deploy-failure-playbook.md`(deploy 스킬 번들) 진단 | **git push → `status.sh <app_id>` 재폴링** | `/deploy-fix --from-deploy-failure <app_id>` |
+
+- **인자 `--from-deploy-failure <app_id>` 가 있으면 → 모드 B**(deploy 가 빌드 실패에서 위임한 경로). 그 `app_id` 를 대상으로 한다.
+- **인자가 없으면:** 최근 빌드 실패 앱을 감지해 본다 — `my-apps.sh` 로 내 앱을 조회하고, 가장 최근에 만든 앱이 아직 기동되지 않았으면(상태가 불확실하면) "방금 올리다 막힌 앱(○○)을 고칠까요, 아니면 배포 전 검토에서 나온 문제를 고칠까요?"를 `AskUserQuestion`(고정 2옵션: `방금 올리다 막힌 앱`·`검토에서 나온 문제`)으로 한 번 확인한다. 감지가 애매하거나 사용자가 검토 문제를 고르면 **모드 A**. (명시적으로 빌드 실패 앱을 골랐으면 모드 B, 그 `app_id` 사용.)
+- **모드 B → 아래 ⑧~⑪(빌드로그 모드)로** 간다. **모드 A → 그대로 ①~⑦(검토 수정 모드).**
+- **정본 구분(중요):** 모드 B 의 정본은 **빌드로그**다. `_engine.json` 을 파싱해 빌드 실패 원인을 만들지 않는다(빌드 실패는 엔진 finding 이 아니라 빌드 출력이 근거).
+
+---
+
+## ① 검토 산출물 로드 (정본만 읽는다 — `.md` 파싱 금지) — 모드 A
 프로젝트 루트 `.fursys-deploy-hub/` 의 검토 산출물을 읽는다. **finding 의 정본은 `_engine.json`, commit 의 정본은 `last-verdict.json` 이다. `.md` 리포트를 파싱해 finding 을 복원하지 않는다**(`.md` 는 사람·board 용 표현이라 기계 입력으로 부적합).
 ```bash
 test -f .fursys-deploy-hub/_engine.json && test -f .fursys-deploy-hub/last-verdict.json && echo HAS_ARTIFACTS || echo NO_ARTIFACTS
@@ -83,8 +98,57 @@ node "$CLAUDE_PLUGIN_ROOT/skills/deploy-fix/scripts/plan-summary.mjs" .fursys-de
 - **진전 없어 중단** → "제가 자동으로는 더 고치지 못했어요. 리포트의 복붙 수정 프롬프트로 직접 고쳐 보시거나 IT본부에 문의해 주세요." + (원하면) "방금 고친 게 마음에 안 들면 원래대로 되돌려 드릴 수 있어요."
 - 수정으로 코드가 바뀌었으면 끝에 한 줄: "이 수정 내용은 **저장(코드 올리기)** 해야 배포에 반영돼요. `/deploy` 로 올릴 때 최신 코드가 함께 올라가요."
 
+---
+
+# 빌드로그 모드 (모드 B — `--from-deploy-failure <app_id>`)
+> 빌드/배포가 실패한 뒤 **빌드로그를 근거로** 코드를 고쳐 git push 재배포까지 돕는다. ①~⑦(검토 수정)과 별개 경로다.
+> 공유 원칙은 동일하다: **확인 전 코드 수정 금지 · 안전 스냅샷 먼저 · 사람만 아는 값/외부 자격증명/기록 시크릿 제외 · 시크릿 비노출 · ≤2라운드·진전 없으면 중단.**
+
+## ⑧ 빌드로그 확보 + 원인 진단 (정본 = 로그)
+대상 앱(`<app_id>`)의 빌드 기록을 가져온다(민감값은 proxy 가 1차로 가린 상태로 온다):
+```bash
+"$CLAUDE_PLUGIN_ROOT/skills/deploy/scripts/logs.sh" "<app_id>"
+```
+(`$CLAUDE_PLUGIN_ROOT` 가 안 잡히면: `LS="$(find "$HOME/.claude/plugins" -path '*/fursys-deploy-hub/skills/deploy/scripts/logs.sh' 2>/dev/null | head -1)"; "$LS" "<app_id>"`)
+- **`LOGS_OK`** → 이어지는 JSON `{ "status", "deployment_uuid", "logs" }` 를 읽는다. `logs` 텍스트(끝부분 = 실제 에러)를 **deploy 스킬 번들 `references/deploy-failure-playbook.md`** 의 유형(의존성 누락 / lockfile / 타입에러 / 포트 / 시작명령 / Dockerfile 단계 / 필수 설정값 누락)에 매핑한다.
+- **로그가 비었거나 `deployment_uuid` 가 `null`** → "자세한 빌드 기록을 가져오지 못했어요. 잠시 후 다시 시도하거나 IT본부에 문의하세요." 하고 **멈춘다**(없는 원인 지어내지 않는다).
+- **`UNAUTHORIZED`/`NOT_FOUND`/`PROXY_ERROR`** → 각각 키 재발급·미등록·재시도 안내 후 멈춘다(deploy ⑨ 결과 코드와 동일).
+- **시크릿 비노출:** 로그 원문을 통째로 옮기지 않는다. 원인이 된 **핵심 줄만** 추리고, 비밀번호·키처럼 보이는 값은 가린다(proxy 스크럽 1차 + 여기 2차).
+
+## ⑨ 수정 계획 요약 (고정 형식 — 스크립트 출력)
+진단 결과를 **고정 형식으로 렌더**한다(모델별 문구 흔들림 방지). `plan-summary.mjs` 를 로그 진단 모드로 부른다:
+```bash
+node "$CLAUDE_PLUGIN_ROOT/skills/deploy-fix/scripts/plan-summary.mjs" --logs <유형키> "<핵심 에러 한 줄>" ["<모듈/경로 등 인자>"]
+```
+- `<유형키>` 는 playbook 유형: `dep-missing`·`dep-devdep`·`lockfile`·`build-error`·`port`·`start-cmd`·`dockerfile`·`env-missing`·`unknown` 중 하나.
+- 스크립트가 **자동수정 대상인지 / 사람 판단 필요(안내만)인지**를 쉬운 우리말 고정 형식으로 출력한다(시크릿 값 미포함). 그 출력을 그대로 사용자에게 보여준다 — 문구를 즉석에서 새로 짓지 않는다.
+- **자동수정 제외(안내만):** `env-missing`(필수 설정값 누락) 중 사람만 아는 값·외부 자격증명, `note:"ask"` 항목, `inGitHistory` 시크릿, 아키텍처 변경이 필요한 경우. 이때는 "값을 알려주세요 / IT본부에 문의"로만 안내하고 자동수정·재폴링하지 않는다.
+
+## ⑩ 확인 → 수정 → git push 재배포 → 재폴링 (≤2라운드)
+1. **`AskUserQuestion`(고정 옵션):** `고쳐 주세요`·`안 할래요`. `안 할래요` 면 여기서 멈춘다.
+2. **안전 스냅샷 먼저**(⑤와 동일 — 고치기 전 상태 보관, git 용어 비노출): "원래대로 되돌릴 수 있게 지금 상태를 보관했어요."
+   ```bash
+   git stash push -u -m "deploy-fix-snapshot $(date '+%Y%m%d-%H%M')" >/dev/null 2>&1 && git stash apply >/dev/null 2>&1 || true
+   ```
+3. **playbook 진단대로 코드 Edit.** 한 가지씩 고치고, **어떤 파일의 무엇을 고쳤는지** 쉬운 말로 통보한다(시크릿 미출력).
+4. **git push 로 재배포**한다(=Coolify webhook 자동 재배포). **`/deploy` 재실행(재-POST) 금지 — 이중배포 가드 불변.** 같은 앱에 다시 올라간다.
+   ```bash
+   git add -A && git commit -m "fix: 빌드 실패 자동 수정 (deploy-fix)" && git push
+   ```
+5. **재폴링:** push 직후 deploy 스킬 ⑦-1 의 종결 폴링 루프를 그대로 돌린다 — `status.sh <app_id> <domain>` 를 backoff(5s→10s→20s→30s, 이후 30s 고정)로 반복, terminal(`RUNNING`/`FAILED`)까지. 상한 ~10분. **`<domain>` 은 그 앱의 접속 도메인**(이미 만들어진 앱이므로 `my-apps.sh` 로 조회해 얻는다 — proxy `/status` 는 domain 을 안 주므로 인자로 넘겨야 RUNNING 시 주소를 보여줄 수 있다. 모르면 생략해도 RUNNING 판정 자체는 정상).
+   ```bash
+   "$CLAUDE_PLUGIN_ROOT/skills/deploy/scripts/status.sh" "<app_id>" "<domain>"
+   ```
+6. **라운드 상한 ≤2 · 진전 없으면 즉시 중단:** 다시 `FAILED` 면 새 로그로 **한 번만 더**(총 2라운드). 직전 대비 **진전 없음**(같은 에러 반복 / 로그에 의미 변화 없음 / 같은 실패 신호 반복)이면 **즉시 중단**한다.
+
+## ⑪ 결과 안내 (한글, 쉬운 말)
+- **성공(`RUNNING`)** → "고쳤고 이번엔 잘 올라갔어요. 주소: `<https_url>`" (`LIVE_OK`/`LIVE_PENDING` 보조 줄로 접속 가능/예열 안내).
+- **미해결(2라운드/진전없음)** → "여기까진 제가 자동으로 고쳤어요. 남은 건 사람 판단이 필요해요." + 핵심 로그(가린 형태) + 다음 단계. **앱은 절대 지우지 않는다**(deploy ⑨ 원칙). 사람만 아는 값/외부 자격증명이 원인이면 "이 값은 ○○인데 제가 만들 수 없어요 — 알려주시거나 IT본부에 문의해 주세요"로 안내.
+- 진전 없어 중단이면 "방금 고친 게 마음에 안 들면 원래대로 되돌려 드릴 수 있어요"(스냅샷 복원)도 함께 안내한다.
+
 ## 금지
 - **자연어 요청만으로 이 스킬을 시작하지 않는다.** "고쳐줘"·"수정해줘" 같은 일반 문장에는 스킬을 띄우지 말고 `/deploy-fix` 입력을 안내한다. **오직 `/deploy-fix` 명시 호출에서만 동작한다.**
+- **(모드 B) 빌드 실패 원인의 정본은 로그다 — `_engine.json` 을 파싱해 빌드 원인을 만들지 않는다.** 재배포는 **git push** 로만(재-POST 금지). **앱 삭제 금지.**
 - **④ 사용자 확인 전에 코드를 고치지 않는다.**
 - `.md` 리포트를 파싱해 finding 을 복원하지 않는다(정본은 `_engine.json`).
 - 사람만 아는 값(`note:"ask"`)·외부 자격증명·기록에 남은 시크릿은 **자동수정·재시도하지 않는다**(안내만).

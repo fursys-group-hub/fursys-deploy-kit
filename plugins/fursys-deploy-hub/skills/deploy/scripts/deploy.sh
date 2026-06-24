@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# 최초 앱 생성 + 첫 배포: POST /apps → 상태 폴링 → 결과 반환.
+# 최초 앱 생성 + 첫 배포: POST /apps → 결과 코드 반환(POST 중심, 장시간 폴링 없음).
+# 종결 대기(기동/실패 판정)는 호출측(deploy 스킬 ⑦)이 status.sh 를 backoff 로 반복 호출해 한다(CONTRACTS §11.2).
 # 결정적 plumbing. 비밀값(키)은 인자/표준입력으로 받고 echo 하지 않는다.
 #
 # 사용:
@@ -30,13 +31,8 @@
 #     REDEPLOY_WEBHOOK <app_id> <domain> 본인 기존앱, 서버가 다시 배포 안 함(200 status:unchanged,
 #                                        deploy_triggered:false) — 폴링하지 않음. git push 가 자동 재배포.
 #     REDEPLOYED <app_id> <domain>       고아 자가복구로 새로 만듦(200 redeployed:true, deploy_triggered:true)
-#                                        — CREATED 와 동일 폴링
-#     RUNNING <app_id> <https_url>  폴링 결과 정상 기동 확인(주소는 https 로 정규화해 출력)
-#     LIVE_OK <https_url> <code>     기동 후 https 로 실제 응답 확인됨(2xx/3xx) — 바로 접속 가능
-#     LIVE_PENDING <https_url> <code> 기동은 됐으나 https 첫 응답이 아직(앱 예열 중일 수 있음 → 잠시 후 접속)
-#     DEPLOY_FAILED <app_id>         폴링 중 exited/error/stopped 감지(→ logs.sh 로 해설)
-#     PENDING <app_id> <domain>      폴링 시간초과(아직 진행 중)
-#     STILL_BUILDING <app_id> <domain>  폴링 중 강제 종료됨(앱은 생성됨 — 재배포 금지, my-apps/logs 로 확인)
+#                                        — CREATED 와 동일하게 호출측이 status.sh 로 종결 폴링
+#     (종결 판정 RUNNING/LIVE_OK/LIVE_PENDING/FAILED/BUILDING/UNKNOWN 은 이제 status.sh 가 낸다 — 이 스크립트는 안 낸다.)
 #     NAME_TAKEN                     409 error=name_taken → 그 이름(app_id)이 타인 소유(남의 앱 재배포 금지)
 #     ALREADY_EXISTS                 409, error 없음/그 외 → 하위호환 잔존(정상 재시도엔 더 이상 안 옴)
 #     PLACEHOLDER_UNRESOLVED         본문에 치환 안 된 ${...} 가 남아 전송 중단(빌드 깨짐 사전 차단)
@@ -146,42 +142,12 @@ case "$HTTP" in
     fi
     if [ -n "$REDEPLOYED" ]; then echo "REDEPLOYED $APP_ID $DOMAIN"; else echo "CREATED $APP_ID $DOMAIN"; fi
     printf '%s\n' "$JSON"
-    # 폴링 중 호출측 타임아웃 등으로 강제 종료(SIGTERM/INT)되어도 "앱은 이미 생성됨"을 알 수 있게
-    # 폴백 한 줄을 남긴다(이게 없으면 출력이 통째로 유실돼, 운영자가 생성 사실을 모르고 중복 배포하는 사고로 이어진다).
-    trap 'printf "STILL_BUILDING %s %s\n" "$APP_ID" "$DOMAIN"' TERM INT
-    # 상태 폴링: 30초 간격 × 4회(~120초). 호출측 기본 타임아웃(2분)에 근접하므로, 폴링이 그 안에
-    # 끝나면 최종 상태(RUNNING/DEPLOY_FAILED/PENDING)를 출력하고, 초과로 강제 종료되면 위 TERM/INT
-    # 트랩이 STILL_BUILDING(안전 — 앱은 이미 생성됨·재배포 금지)을 남겨 출력 유실(중복배포 사고)을 막는다.
-    # 더 오래 걸리면 PENDING 으로 끝내고, 호출측이 logs.sh/my-apps 로 이어서 확인한다.
-    # CREATED/REDEPLOYED 공통(REDEPLOY_WEBHOOK 은 위에서 이미 종료).
-    for _ in $(seq 1 4); do
-      sleep 30
-      SRESP="$(curl -sS "$PROXY_URL/apps/$APP_ID/status" -H "X-Proxy-Key: $KEY" 2>/dev/null || true)"
-      STATUS="$(printf '%s' "$SRESP" | grep -oE '"status"[[:space:]]*:[[:space:]]*"[^"]*"' | head -n1 | sed -E 's/.*:[[:space:]]*"([^"]*)"/\1/')"
-      case "$STATUS" in
-        *running*)
-          # T5: 컨테이너가 떴어도 앱이 실제로 응답하는지 https 로 한 번 확인한다.
-          # 앱은 https 로만 서빙되므로(http 는 502 가 난다) 반드시 https 로 정규화해 찍는다.
-          if [ -n "$DOMAIN" ]; then HTTPS_URL="https://${DOMAIN#*://}"; else HTTPS_URL=""; fi
-          echo "RUNNING $APP_ID ${HTTPS_URL:-$DOMAIN}"
-          if [ -n "$HTTPS_URL" ]; then
-            # 앱 예열(첫 응답 지연) 대비 최대 ~30초(6회) 동안 2xx/3xx 를 기다린다. 성공 시 즉시 종료.
-            LIVE_CODE=""
-            for _ in $(seq 1 4); do
-              LIVE_CODE="$(curl -sS -o /dev/null -w '%{http_code}' -L --max-time 8 "$HTTPS_URL" 2>/dev/null || true)"
-              case "$LIVE_CODE" in 2*|3*) break ;; esac
-              sleep 4
-            done
-            case "$LIVE_CODE" in
-              2*|3*) echo "LIVE_OK $HTTPS_URL $LIVE_CODE" ;;
-              *)     echo "LIVE_PENDING $HTTPS_URL ${LIVE_CODE:-000}" ;;
-            esac
-          fi
-          exit 0 ;;
-        *exited*|*error*|*stopped*|*failed*) echo "DEPLOY_FAILED $APP_ID"; exit 0 ;;
-      esac
-    done
-    echo "PENDING $APP_ID $DOMAIN"
+    # POST 가 성공해 앱이 만들어졌다(생성 트리거 완료). 종결 대기(기동/실패 판정)는 더 이상
+    # 이 스크립트가 장시간 폴링하지 않고, 호출측(deploy 스킬 ⑦)이 status.sh 를 backoff 로 반복
+    # 호출해 결정적으로 판정한다(CONTRACTS §11.2). 각 호출이 빠르게 끝나 호출측 타임아웃에 안 걸린다.
+    # STILL_BUILDING 트랩 정신(앱은 이미 생성됨·재-POST 금지)은 스킬 루프가 같은 정신으로 유지한다
+    # (CREATED/REDEPLOYED 를 받은 서비스는 "이미 만들어진 것" — 다시 POST 하지 않는다).
+    exit 0
     ;;
   401) echo "UNAUTHORIZED" ;;
   403) echo "FORBIDDEN" ;;

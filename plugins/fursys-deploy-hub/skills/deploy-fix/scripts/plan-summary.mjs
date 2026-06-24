@@ -1,17 +1,67 @@
 #!/usr/bin/env node
 // /deploy-fix 수정 계획 요약 — 고정 형식 렌더(모델별 문구 흔들림 방지).
-// 입력: <engine.json> <last-verdict.json>
+//
+// 모드 A(검토 수정): plan-summary.mjs <engine.json> <last-verdict.json>
 //   engine.json    : security-verdict.schema.json findings[] = {severity,rule,file,line,message,inGitHistory,aiPrompt}
 //   last-verdict   : { commit, env_plan:[{name,class,note}], ... }
+//
+// 모드 B(빌드로그): plan-summary.mjs --logs <typeKey> "<핵심 에러 한 줄>" ["<인자: 모듈/경로 등>"]
+//   typeKey ∈ dep-missing|dep-devdep|lockfile|build-error|port|start-cmd|dockerfile|env-missing|unknown
+//   (deploy-failure-playbook.md 유형) — 빌드 실패는 엔진 finding 이 아니라 로그가 정본.
+//
 // 출력(stdout): 비개발자용 한글 고정 형식. 자동수정 대상 / 사람 판단 필요(안내만) 분리.
 //   시크릿(키·비밀번호) 값은 절대 출력하지 않는다(이름·위치·설명만 — 엔진 마스킹 원칙).
 // 결과 코드(첫 줄): PLAN_OK <autoCount> <manualCount>  /  PLAN_EMPTY  /  PLAN_ERROR <reason>
 "use strict";
 import fs from "node:fs";
 
+// ── 모드 B: 빌드로그 진단 요약 ────────────────────────────────────────────────
+if (process.argv[2] === "--logs") {
+  const typeKey = process.argv[3] || "unknown";
+  const errLine = process.argv[4] || "";
+  const arg = process.argv[5] || "";
+  // 각 유형: { 설명, 자동수정 가능 여부 }. env-missing 은 사람 판단(안내만) 기본.
+  const TYPES = {
+    "dep-missing":  { auto: true,  ko: "앱을 만드는 데 필요한 부품(모듈)이 빠졌어요." },
+    "dep-devdep":   { auto: true,  ko: "앱을 만들 때 쓰는 도구가 '운영용 설치' 모드 때문에 빠졌어요(설치 방식만 살짝 바꾸면 돼요)." },
+    "lockfile":     { auto: true,  ko: "부품 목록과 잠금 기록이 서로 안 맞아요(둘을 다시 맞추면 돼요)." },
+    "build-error":  { auto: true,  ko: "코드에 고쳐야 할 부분이 있어 만드는 중 멈췄어요." },
+    "port":         { auto: true,  ko: "앱이 실제로 쓰는 접속 통로(포트)와 설정의 번호가 달라요." },
+    "start-cmd":    { auto: true,  ko: "앱을 켜는 명령에 문제가 있어 시작하자마자 멈췄어요." },
+    "dockerfile":   { auto: true,  ko: "앱을 만드는 설명서(Dockerfile)의 한 단계에서 막혔어요." },
+    "env-missing":  { auto: false, ko: "앱이 켜질 때 꼭 필요한 설정값이 없어요(사람이 정하거나 외부에서 받아야 하는 값일 수 있어요)." },
+    "unknown":      { auto: false, ko: "로그만으로는 원인을 정확히 짚기 어려워요(핵심 에러 줄을 보고 사람이 확인해야 해요)." },
+  };
+  const t = TYPES[typeKey] || TYPES["unknown"];
+  const detail = arg ? `${t.ko} (${arg})` : t.ko;
+  const out = [];
+  out.push("───────────────────────────────");
+  out.push("🛠️  수정 계획 (빌드 기록 기준)");
+  out.push("───────────────────────────────");
+  out.push("");
+  if (t.auto) {
+    out.push("✅ 제가 자동으로 고칠 수 있어요: 1개");
+    out.push(`   · ${detail}`);
+  } else {
+    out.push("✅ 제가 자동으로 고칠 수 있어요: 없음");
+    out.push("");
+    out.push("⚠️  사람 판단이 필요해요(제가 자동으로 못 고쳐요): 1개");
+    out.push(`   · ${detail}`);
+  }
+  if (errLine) {
+    out.push("");
+    out.push(`핵심 에러: ${errLine}`);
+  }
+  out.push("");
+  out.push("───────────────────────────────");
+  console.log(t.auto ? "PLAN_OK 1 0" : "PLAN_OK 0 1");
+  console.log(out.join("\n"));
+  process.exit(0);
+}
+
 const [, , enginePath, verdictPath] = process.argv;
 if (!enginePath || !verdictPath) {
-  console.log("PLAN_ERROR usage: plan-summary.mjs <engine.json> <last-verdict.json>");
+  console.log("PLAN_ERROR usage: plan-summary.mjs <engine.json> <last-verdict.json>  |  --logs <typeKey> \"<error line>\" [\"<arg>\"]");
   process.exit(2);
 }
 

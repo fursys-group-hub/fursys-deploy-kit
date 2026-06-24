@@ -12,6 +12,7 @@
 2. EXPOSE 포트 ↔ 앱 실제 포트 일치
 3. 시작 방법(ENTRYPOINT/CMD/start) 존재
 4. 필수 실행 설정값(env) 누락
+4-1. 영속 볼륨 필요 감지 (단일 서비스 — `volumes_plan`)
 5. HEALTHCHECK 권장
 6. 설정값 종류 분류 (빌드 포함 / 일반 / 잠금)
 7. 배포가능 축 판정 규칙
@@ -87,6 +88,35 @@ grep -iE '^(CMD|ENTRYPOINT)' Dockerfile
 - 코드에서 참조하는 환경변수(`process.env.X`, `os.environ[...]`, `@Value("${...}")`, `import.meta.env.VITE_*`, `st.secrets[...]` 등)를 모으고, `.env`/`.env.example`/설정 검증 스키마(Joi/Zod/Pydantic)와 대조해 **꼭 필요한데 어디에도 값/기본값이 없는 것**을 찾는다.
 - 누락된 필수값이 있으면 **높음**(컨테이너가 떠도 죽음). 화면 문구: "이 앱이 꼭 필요로 하는 설정값이 빠져 있어요. 비어 있으면 켜지자마자 멈춥니다."
 - 단, fgdw(사내 DW) 접속 계정/비밀번호는 **클라이언트에서 채우지 않아도 됨**(배포 시 사내 공용 계정으로 자동 치환). 누락으로 보고하되 "IT가 배포 시 자동 처리"임을 함께 안내.
+
+---
+
+## 4-1. 영속 볼륨 필요 감지 (단일 서비스 — `volumes_plan`)
+
+상태를 저장하는 단일 서비스 앱(SQLite·업로드 등)은 영속 스토리지가 없으면 **재배포 때마다 데이터가 사라진다.** 멀티서비스는 `services.json` 의 `volumes` 로 이미 처리되지만, 단일 서비스(매니페스트 없음)는 여기서 감지해 **`last-verdict.json` 의 `volumes_plan`(컨테이너 디렉터리 경로 배열)** 에 기록한다. 그러면 deploy 가 코드를 다시 안 뒤지고 `--volumes` 로 전달한다(env_plan 과 같은 캐싱).
+
+**감지 신호(하나라도 해당 → 볼륨 필요):**
+```bash
+grep -iE '^\s*VOLUME' Dockerfile 2>/dev/null                  # Dockerfile VOLUME 선언
+grep -riE 'better-sqlite3|[^a-z]sqlite3|DB_PATH|DATABASE_PATH' . --include='*.json' --include='*.ts' --include='*.js' --include='*.py' --include='.env*' 2>/dev/null | head
+grep -riE 'UPLOAD_DIR|UPLOADS_DIR|STORAGE_DIR|DATA_DIR' . --include='.env*' --include='*.ts' --include='*.js' --include='*.py' 2>/dev/null | head
+```
+- **Dockerfile `VOLUME ["<경로>"]` 선언** — 그 경로가 영속 볼륨 후보.
+- **SQLite 사용**(`better-sqlite3`/`sqlite3`/`DB_PATH=/dir/...`) + DB 파일 경로가 디렉터리 아래(`*.db`) — 그 **상위 디렉터리**가 후보(예: `DB_PATH=/data/memos.db` → `/data`).
+- **업로드/저장 디렉터리 설정값**(`UPLOAD_DIR=/data/...` 등) — 그 디렉터리가 후보.
+- **기록 규칙:** 후보 경로의 **상위 디렉터리**(파일 아님 — 예 `/data`)를 모아 중복 제거한다. 이 목록을 5-1(security-review SKILL)의 `volumes_plan` 에 적는다. 신호가 하나도 없으면 `volumes_plan` 은 생략하거나 `[]`(볼륨 미요청 — 현행 동일).
+
+**non-root 권한 점검(단일 서비스에도 적용 — §1 의 멀티서비스 점검을 확장):** 볼륨 경로를 감지했으면, Dockerfile 이 `USER`(non-root) **앞에서** 그 경로를 `mkdir -p <경로> && chown <user> <경로>` 하는지 확인한다.
+```bash
+grep -niE '^\s*(USER|RUN .*mkdir|RUN .*chown)' Dockerfile 2>/dev/null
+```
+- `USER` 가 있고(non-root) 그 **앞**에 해당 볼륨 경로의 `mkdir`+`chown` 이 **없으면 → 높음**(빈 볼륨이 root 소유로 마운트돼 컨테이너 사용자가 못 써 **배포 후 권한 크래시**, 예: `PermissionError: '/data'`). 화면 문구: "이 앱은 자료를 저장하는데, 그 저장 공간을 앱이 쓸 수 있게 미리 준비하는 설정이 빠져 있어요(그대로 올리면 켜진 뒤 멈출 수 있어요)." + 복붙 프롬프트(아래).
+  ```
+  배포 후 앱이 영속 볼륨 경로 '<경로>'에 권한이 없어 크래시할 수 있어. Dockerfile 에서 USER(non-root) 줄 앞에 `RUN mkdir -p <경로> && chown <user> <경로>` 를 추가해줘. (<user> 는 그 Dockerfile 의 USER 값)
+  ```
+- root 로 도는 앱(`USER` 없음)이면 이 점검은 통과(권장 사항 아님). 볼륨 감지 자체는 그대로 `volumes_plan` 에 기록한다.
+
+> 이 항목은 배포가능 축 판정을 **막지 않는다**(권한 미준비는 높음 경고이되, Dockerfile/포트/시작/필수env 같은 결정적 차단 항목은 아니다 — §7 참조). 단 `volumes_plan` 기록은 deploy 가 영속 스토리지를 마련하도록 항상 남긴다.
 
 ---
 

@@ -90,7 +90,7 @@ printf '%s' "$WEB_ENV_JSON" | "$CLAUDE_PLUGIN_ROOT/skills/deploy/scripts/deploy.
   --service web --base-dir frontend
 # → app_id=cataloglens-web
 ```
-- 각 호출의 결과 코드는 단일배포 ⑦과 똑같이 처리한다(CREATED→RUNNING/DEPLOY_FAILED/PENDING, 409 등).
+- 각 호출의 결과 코드는 단일배포 ⑦과 똑같이 처리한다. **`CREATED`/`REDEPLOYED` 면 그 서비스마다 ⑦-1 종결 폴링 루프(`status.sh <app_id>` backoff 반복)를 돌려 `RUNNING`(성공)/`FAILED`(→⑨)까지 따라간 뒤 다음 서비스로 넘어간다**(deploy.sh 는 POST 까지만 — 종결 대기는 스킬이 한다). `REDEPLOY_WEBHOOK` 은 폴링하지 않는다. 409 등은 ⑦ 그대로.
 - **`PLACEHOLDER_UNRESOLVED`** 가 나오면 = 치환을 빠뜨려 `${...}` 가 본문에 남은 것(스크립트가 전송 전에 막았다 — 앱은 만들어지지 않았다). 5-1의 안내("주소 연결값이 아직 안 채워졌어요…")로 사용자에게 알리고 **거기서 멈춘다.** 배포 전 검토를 다시 돌려 연결 목록을 새로 만든 뒤 재시도하도록 안내한다.
 - **한 서비스라도 실패(DEPLOY_FAILED/PROXY_ERROR)** 하면 거기서 멈추고 사용자에게 어느 부분이 막혔는지 쉽게 알린다(⑨ 실패 해설). 이미 올라간 앞 서비스는 그대로 둔다(중복 생성 시 409 ALREADY_EXISTS → git push 자동재배포 안내).
 
