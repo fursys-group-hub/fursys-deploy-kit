@@ -49,6 +49,13 @@ if OUT="$(npx @fursys/create-app@latest "$NAME" --type="$TYPE" "$FGDW" 2>&1)"; t
     FGDW_LINE="- 회사 데이터 창고(fgdw): 연결 안 함"
     FGDW_NOTE=""
   fi
+  # DB 안내는 type 에 따라 분기한다. dashboard-vite 는 nginx 정적이라 서버 런타임이 없어
+  # DB 를 붙일 수 없다(붙이려면 웹 서비스로 새로 만들어야 함). 나머지는 백엔드가 있어 별도 DB 추가가 가능.
+  if [ "$TYPE" = "dashboard-vite" ]; then
+    DB_NOTE="> 💡 이 종류는 화면만 보여주는 정적 앱이라 자료 저장·DB는 붙일 수 없어요. 나중에 입력을 기록·조회해야 한다면 \`/create-app\` 으로 '웹 서비스'를 새로 만들어 주세요(그쪽은 DB를 붙일 수 있어요)."
+  else
+    DB_NOTE=$'> 💡 만약 자료를 저장·수정해야 한다면(예: 사용자 입력을 기록), 회사 데이터 창고(fgdw)는 읽기 전용이라 안 돼요. 별도 DB가 필요하고, 만든 뒤 이 가이드를 보고 추가하면 돼요 →\n> https://ai-library.hub.fursys.com/guides/data-db/overview'
+  fi
   cat <<EOF
 ===SHOW===
 ✅ 새 프로젝트가 만들어졌어요!
@@ -66,8 +73,7 @@ ${FGDW_LINE}${FGDW_NOTE}
 3. **배포 전 검토** — 올리기 전에 "배포 전 검토 해줘"(또는 \`/deploy-check\`)라고 하시면 점검표(HTML 리포트)를 자동으로 만들어 드려요.
 4. **배포** — "사내 서버에 올려줘"(또는 \`/deploy\`)라고 하시면 주소 앞부분만 정해서 처음 한 번 올라가요. 이후 수정은 그냥 저장하면 자동으로 다시 올라가요.
 
-> 💡 만약 자료를 저장·수정해야 한다면(예: 사용자 입력을 기록), 회사 데이터 창고(fgdw)는 읽기 전용이라 안 돼요. 별도 DB가 필요하고, 만든 뒤 이 가이드를 보고 추가하면 돼요 →
-> https://ai-library.hub.fursys.com/guides/data-db/overview
+${DB_NOTE}
 
 다음으로 무엇을 도와드릴까요? 😊
 ===END===
