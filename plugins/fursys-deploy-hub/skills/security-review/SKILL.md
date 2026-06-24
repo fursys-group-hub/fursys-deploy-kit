@@ -1,6 +1,6 @@
 ---
 name: security-review
-description: 배포 전 검토 — 보안 + 배포 가능성 두 축을 점검해 verdict(통과/주의/차단)와 배포 가능 여부를 판정하고 **항상 한글 HTML 리포트**를 만든다. **오직 슬래시 커맨드 `/deploy-check` 으로 호출될 때만** 이 스킬을 쓴다. "보안 검사", "배포 전 점검", "배포해도 되는지", "검토해줘", "다시 검토" 같은 자연어 요청만으로는 절대 자동 활성화하지 말 것 — "검토·배포"는 일상적으로 자주 쓰이는 말이라 의미만으로 켜면 안 된다. 그런 요청에는 스킬을 시작하지 말고 `/deploy-check` 입력을 안내하라. 결과는 텍스트 요약이 아니라 HTML 리포트가 기본이다.
+description: 배포 전 검토 — 보안 + 배포 가능성 두 축을 점검해 verdict(통과/주의/차단)와 배포 가능 여부를 판정하고 **항상 한글 `.md` 리포트**를 만들어 채팅에 그대로 보여준다. **오직 슬래시 커맨드 `/deploy-check` 으로 호출될 때만** 이 스킬을 쓴다. "보안 검사", "배포 전 점검", "배포해도 되는지", "검토해줘", "다시 검토" 같은 자연어 요청만으로는 절대 자동 활성화하지 말 것 — "검토·배포"는 일상적으로 자주 쓰이는 말이라 의미만으로 켜면 안 된다. 그런 요청에는 스킬을 시작하지 말고 `/deploy-check` 입력을 안내하라. 결과는 텍스트 요약이 아니라 `.md` 리포트가 기본이다.
 ---
 
 당신은 Fursys **사내 서버 배포 전 검토** 스킬이다. 목적은 비개발자(브랜드 실무자)가 자기 프로젝트를 **사내 서버에 올릴 수 있는 상태로 만들면서 보안 문제도 잡는 것**이다. 두 축(🔒보안 + 🚀배포가능성)을 모두 통과해야 "배포 가능".
@@ -11,7 +11,8 @@ description: 배포 전 검토 — 보안 + 배포 가능성 두 축을 점검�
 - 지식은 `references/` 번들에 있다. 필요한 것만 그때그때 읽는다(progressive disclosure).
 - 모든 사용자 노출 문구는 **쉬운 우리말**. "verdict·findings·env·build·runtime·locked·secret" 같은 영어 용어를 그대로 쓰지 말 것(괄호 원어 병기는 가능). 심각도는 **"치명/높음/중간/낮음"**.
 - 외부 호스팅(Vercel/Netlify/Streamlit Cloud 등)은 **언급 금지**. 사내 서버에 단일 컨테이너 + Dockerfile 전제만.
-- **결과물은 항상 HTML 리포트(6단계)** 다. 점검을 텍스트 표로만 답하고 끝내지 말 것 — 사용자가 "HTML/리포트 만들어줘"라고 따로 말하지 않아도 **반드시 리포트 파일을 생성**하고 그 경로를 안내한다. (리포트 생성이 이 검토의 완료 조건이다 — 인라인 점검만 하고 끝내지 않는다.)
+- **결과물은 항상 `.md` 리포트(6단계)** 다. 점검을 텍스트 표로만 답하고 끝내지 말 것 — 사용자가 "리포트 만들어줘"라고 따로 말하지 않아도 **반드시 리포트 `.md` 를 생성**해 **채팅에 그대로 보여주고** 파일 경로도 안내한다. (리포트 생성이 이 검토의 완료 조건이다 — 인라인 점검만 하고 끝내지 않는다.)
+- **검토 산출물은 항상 `.fursys-deploy-hub/` 에 남긴다 — `_engine.json`·`last-verdict.json`·`.md` 리포트 세 가지.** 이 산출물은 `/deploy`(서버 등록)와 `/deploy-fix`(자동 수정)가 읽는 **안정 입력**이다. `_engine.json` 의 finding 형태(`severity·rule·file·line·message·inGitHistory·aiPrompt`)는 그 계약상 불변이다.
 
 ---
 
@@ -92,7 +93,7 @@ ls -1 docker-compose.yml compose.yaml 2>/dev/null  # compose 있나(구조 힌�
     "security": "pass|caution|blocked",
     "deployable": true,
     "final": "ok|blocked",
-    "report": "<6단계에서 만든 html 상대경로>",
+    "report": "<6단계에서 만든 .md 상대경로>",
     "report_url": "<검토 단계에선 보통 생략 — /deploy 등록 성공 시 URL 이 만들어진다>",
     "generated_at": "<NOW>",
     "env_plan": [
@@ -109,91 +110,77 @@ ls -1 docker-compose.yml compose.yaml 2>/dev/null  # compose 있나(구조 힌�
 **이 단계에서 검토 결과를 서버로 업로드하지 않는다.** 서버 등록(배포 게이트 입력)은 **`/deploy` 의 ⑤-1 단계에서** 일어난다 — 배포 키가 그때 확보되고, "배포" 맥락이라 외부 전송이 정상 처리되기 때문이다(검토 맥락에서 외부 POST를 시도하면 클라이언트 보안 게이트가 막아 헛수고가 된다). 여기서는 deploy 가 등록에 쓸 **산출물만 로컬에 남긴다**:
 - `.fursys-deploy-hub/_engine.json` — 2단계 엔진 출력(이미 있음).
 - `.fursys-deploy-hub/last-verdict.json` — 5-1에서 기록(security·deployable·final·commit 포함).
-- **`.fursys-deploy-hub/_report-data.json`** — 리포트 조각(배지/최종라인/owaspFindings/deployChecks/prompts/envNotes)을 **구조화 JSON 으로 Write** 한다(스키마는 6단계 끝의 "_report-data.json" 설명 참조). 이 파일을 deploy 가 등록 시 그대로 실어 board 토큰 리포트 URL 을 받는다. **엔진 파트(summary/findings/env_vars/engine_verdict)는 넣지 말 것**(board 가 엔진 컬럼으로 렌더 — 중복 금지). 없거나 깨져도 등록은 막히지 않는다(report_data 없이 진행 = 로컬 HTML 폴백).
+- **`.fursys-deploy-hub/security-report-<YYYYMMDD-HHMM>.md`** — 6단계에서 만든 **완성 `.md` 리포트**. 이 파일 **본문**을 deploy 가 등록 시 그대로(문자열로) 실어 board 토큰 리포트 URL 을 받는다(board 가 마크다운으로 렌더). 없거나 비어도 등록은 막히지 않는다(report_data 없이 진행 = 로컬 `.md` 폴백).
+- **별도의 `_report-data.json`(구조화 JSON)은 더 이상 만들지 않는다.** 리포트는 `.md` 한 장으로 단일화됐다(이중 저작 제거 = 속도). LLM 은 6단계의 값 1벌(`_render-values.txt`)만 쓴다.
 
-→ 사용자에게: **"검토를 마쳤어요(HTML 리포트 생성). 이 결과는 `/deploy` 할 때 서버에 자동 등록되고 배포돼요."** 라고 안내한다.
+→ 사용자에게: **"검토를 마쳤어요(리포트는 위에 바로 보여드렸어요). 이 결과는 `/deploy` 할 때 서버에 자동 등록되고 배포돼요."** 라고 안내한다.
 - **⚠️ 검토 단계에서 배포 키를 요구하거나 차단하지 않는다 — 키 확인·서버 등록은 모두 `/deploy` 의 일이다.** ("검토하려면 키가 필요하다"고 말하지 말 것.)
 - **⚠️ 등록은 deploy 가 한다 — 여기서 `verdict-upload.sh` 를 직접 호출하지 않는다.** (빌더/업로더 호출 방법·결과 코드 계약은 `deploy` 스킬 ⑤-1 에 있다. 상세 본문 스키마는 `references/verdict-upload.md`.)
 
-## 6) HTML 리포트 생성 (조각만 만들고 스크립트가 조립 — 토큰 절감)
-- **리포트는 오직 번들 `scripts/render-report.sh` + 번들 템플릿으로만 만든다.** HTML을 직접 손으로 작성하거나 `artifact-design` 같은 다른 스킬을 불러 리포트를 만들지 말 것 — 회사 표준 리포트 형식·배지/색 규약·게이트 입력과 어긋나고 토큰만 낭비된다. 결과물은 **로컬 HTML 파일까지만**이며, **Artifact(claude.ai)로 발행하지 않는다.**
-**템플릿(CSS·레이아웃·17KB) 전체를 Read 하거나 다시 출력하지 않는다.** 대신 **동적 조각(placeholder 값)만** 담은 작은 values 파일을 Write 하고, 번들 스크립트 `scripts/render-report.sh` 가 템플릿의 `{{KEY}}` 자리에 끼워넣어 완성 HTML을 만든다. (= 템플릿 boilerplate를 LLM이 다시 토해내지 않으므로 출력 토큰이 크게 준다. 완성물은 예전 방식과 **동일**하다 — 템플릿 바이트는 손대지 않는다.) 조각은 JSON 값 + 심화 결과로 채우되 비개발자가 읽도록 한글로 해석한다. **HTML 리포트 본체는 배포 시스템에 올리지 않는다 — 로컬 HTML 파일까지만.**(구조화 검토 결과의 서버 등록은 검토가 아니라 `/deploy`(⑤-1)가 한다.)
+## 6) `.md` 리포트 생성 (값 1벌만 만들고 스크립트가 조립 — 토큰 절감 · 이중 저작 제거)
+- **리포트는 오직 번들 `scripts/render-report-md.sh` + 번들 `.md` 템플릿으로만 만든다.** 마크다운을 처음부터 손으로 쓰거나 `artifact-design` 같은 다른 스킬을 불러 리포트를 만들지 말 것 — 회사 표준 리포트 형식·섹션 규약·게이트 입력과 어긋나고 토큰만 낭비된다. 결과물은 **로컬 `.md` 파일**이며, **Artifact(claude.ai)로 발행하지 않는다.**
+- **고정 문구(섹션 제목·라벨·"아래 글을 그대로 복사해 AI 도구에 붙여넣으면 고쳐줍니다" 류 안내문)는 템플릿에 verbatim 으로 박혀 있다 — LLM 은 가변 finding 값만 채운다.** 템플릿 본문을 Read 하거나 다시 출력하지 않는다(고정 boilerplate 를 LLM 이 다시 토해내지 않으므로 출력 토큰이 줄고, 모델별 문구 흔들림도 사라진다).
+- **`_report-data.json`(구조화 JSON)은 더 이상 만들지 않는다.** 예전엔 같은 finding 을 HTML 조각 + JSON 두 벌로 썼지만, 이제 **값 1벌**(`_render-values.txt`)만 쓰고 스크립트가 `.md` 한 장을 렌더한다. board 도 이 `.md` 본문을 그대로 받아 마크다운으로 렌더한다(단일 소스). 서버 등록은 검토가 아니라 `/deploy`(⑤-1)가 이 `.md` 본문을 실어 한다.
 
-**① values 파일을 Write 한다** — 각 placeholder 블록을 `@@@FDH:KEY@@@` 구분선으로 나눈다(HTML 특수문자 escape 불필요, 여러 줄 가능). 경로는 `.fursys-deploy-hub/_render-values.txt` 권장.
-- **문제가 없어 비울 placeholder(예: 프롬프트 없음)도 구분선은 넣고 내용만 비운다** — 그래야 토큰이 빈 값으로 치환된다(구분선 자체를 빠뜨리면 `{{KEY}}` 가 그대로 남는다).
+**① values 파일을 Write 한다** — 각 placeholder 블록을 `@@@FDH:KEY@@@` 구분선으로 나눈다(특수문자 escape 불필요, 여러 줄 가능). 경로는 `.fursys-deploy-hub/_render-values.txt` 권장.
+- **문제가 없어 비울 placeholder(예: 프롬프트 없음)도 구분선은 넣고 내용만 비운다** — 그래야 빈 값으로 치환된다(구분선 자체를 빠뜨리면 `{{KEY}}` 가 그대로 남는다).
 - 끝에 `@@@FDH:END@@@` 를 둔다.
+- 값은 **마크다운**으로 쓴다(HTML 태그 아님). 비개발자가 읽도록 한글로 해석한다.
 
-각 placeholder에 채울 조각(예시 — 클래스·구조 그대로 쓸 것):
-- `META_PATH` — `target.path`·`target.repo`·`target.framework`·검사일시 4개. 예: `<div class="meta-item"><dt>대상 폴더</dt><dd><code>...</code></dd></div>`
-- `SECURITY_BADGE` — 통과=`pass`(초록)/주의=`caution`(주황)/차단=`blocked`(빨강). 예: `<div class="status-badge pass"><span class="tag">보안</span> 통과</div>`
-- `DEPLOY_BADGE` — 완료=`ready`(초록)/불가=`notready`(빨강). 예: `<div class="status-badge ready"><span class="tag">배포 준비</span> 완료</div>`
-- `FINAL_LINE` — 최종 한 줄 텍스트(✅ 배포 가능합니다 / ❌ 배포 불가 — 사유). 태그 없이 텍스트만.
-- `SUMMARY_CARDS` — 치명/높음/중간/낮음 카드 4개. **숫자 = 엔진 `summary` + 심화(owaspFindings) + 배포 준비 문제(`prompts` 중 `kind:"deploy"` 의 심각도) 합산**(화면에 보이는 보안+배포 심각도 전체와 일치하도록 — 카드만 0인데 표/프롬프트엔 항목 있는 불일치 방지). 보안 프롬프트는 findings 중복이라 **세지 않는다**(이중계수 방지). 예: `<div class="count-card critical"><div class="n">1</div><div class="l">치명</div></div>` (high/medium/low 동일 패턴). ※ 합산은 **표시용일 뿐**, 게이트 판정(`final`/`security`)·`last-verdict.json` 의 `summary` 는 엔진 값 그대로 둔다.
-- `SECURITY_FINDINGS_ROWS` — 보안 문제 표 행(엔진 findings + LLM 심화). 예: `<tr><td><span class="badge badge-critical">치명</span></td><td><code>src/x.ts:12</code></td><td>하드코딩된 키</td><td>...</td></tr>`. 위치 없으면 `-`. `inGitHistory:true` 행은 `<tr class="git-warn">` + 설명 끝에 `<span class="git-note">기록(git 이력)에 남음</span> — ...반드시 폐기·재발급 하고 IT본부에 알리세요.`
-- `SECURITY_PROMPTS` — `aiPrompt` 있는 치명/높음마다 카드. 예: `<div class="prompt-card"><div class="ph"><span class="badge badge-critical">치명</span><h3>...</h3></div><p class="desc">아래 글을 그대로 복사해 AI 도구에 붙여넣으면 고쳐줍니다.</p><pre>{aiPrompt 전문}</pre><p class="prompt-hint">복사 → AI 도구에 붙여넣기</p></div>`. 없으면 빈 블록.
-- `DEPLOY_CHECK_ROWS` — Dockerfile/포트/시작 방법/필수 설정값/상태점검. 예: `<tr><td>Dockerfile</td><td><span class="check-ok">✅</span></td><td>...</td></tr>` (`check-no`=❌, `check-skip`=➖).
-- `DEPLOY_PROMPTS` — 배포 준비 문제 시 복붙 프롬프트 카드(`SECURITY_PROMPTS` 와 동일 구조). 없으면 빈 블록.
-- `ENV_ROWS` — `envVars` 정리표. 다루는 방법은 한글로: `build`→"화면(브라우저)에 포함될 수 있음 → 비밀번호·키 넣지 말 것", `runtime`→"서버에서만 쓰는 일반 값", `locked`→"비밀번호·키 → 안전하게 잠가서 보관(화면 노출 금지)". 예: `<tr><td><code>DB_PASSWORD</code></td><td>비밀번호·키 → 안전하게 잠가서 보관(화면 노출 금지)</td><td>...</td></tr>`
+각 placeholder에 채울 조각(마크다운 — 표 행·블록을 그대로):
+- `META_LIST` — `target.path`·`target.repo`·`target.framework`·검사일시 4개를 **목록 줄**로. 예:
+  ```
+  - **대상 폴더:** `D:\...\my-app`
+  - **코드 저장소:** fursys-group-hub/my-app
+  - **프로젝트 종류:** Next.js
+  - **검사 일시:** 2026-06-23 14:30
+  ```
+- `SECURITY_BADGE` — 보안 축 결과 텍스트: 통과=`통과 ✅` / 주의=`주의 ⚠️` / 차단=`차단 🔴`.
+- `DEPLOY_BADGE` — 배포 준비 텍스트: 완료=`완료 ✅` / 불가=`불가 ❌`.
+- `FINAL_LINE` — 최종 한 줄 텍스트(`✅ 배포 가능합니다` / `❌ 배포 불가 — 사유`).
+- `SUMMARY_LINE` — 한 줄 개수 요약. **숫자 = 엔진 `summary` + LLM 심화 보안 finding + 배포 준비 문제(`DEPLOY_PROMPTS` 의 심각도) 합산**(화면에 보이는 보안+배포 심각도 전체와 일치 — 표·프롬프트엔 항목 있는데 요약만 0인 불일치 방지). 보안 복붙 프롬프트는 finding 중복이라 **세지 않는다**(이중계수 방지). 예: `치명 0 · 높음 1 · 중간 0 · 낮음 2`. ※ 합산은 **표시용일 뿐**, 게이트 판정(`final`/`security`)·`last-verdict.json` 의 `summary` 는 엔진 값 그대로 둔다.
+- `SECURITY_FINDINGS_ROWS` — 보안 문제 **표 행**(엔진 findings + LLM 심화). `| 심각도 | 위치 | 유형 | 설명 |` 순서, 한 항목당 한 줄. 위치 없으면 `-`. 위치·유형은 백틱으로 감싸도 됨. 예: `| 치명 | \`src/config.ts:12\` | 하드코딩된 키 | 코드에 비밀 키가 그대로 적혀 있어요. |`. **`inGitHistory:true` 항목**은 설명 끝에 `**기록(git 이력)에 남음** — 코드에서 지워도 과거 기록에 남아 있으니, 해당 키를 반드시 폐기·재발급 하고 IT본부에 알리세요.` 를 붙인다. **문제가 하나도 없으면** `| ➖ | - | - | 발견된 보안 문제가 없어요. |` 한 행을 넣는다(표가 비지 않게).
+- `SECURITY_PROMPTS` — `aiPrompt` 있는 치명/높음마다 블록. **고정 안내문은 템플릿이 아니라 여기 본문에 직접 넣는다**(verbatim): 제목 `### {심각도} · {짧은 제목}` + 한 줄 `아래 글을 그대로 복사해 AI 도구에 붙여넣으면 이 문제를 고쳐줍니다.` + 코드블록(```) 안에 `aiPrompt` 전문. 없으면 이 블록은 비운다(구분선만).
+- `DEPLOY_CHECK_ROWS` — Dockerfile/포트/시작 방법/필수 설정값/상태점검 **표 행**. `| 점검 항목 | 결과 | 설명 |` 순서. 결과는 `✅`(통과)·`❌`(문제, 배포 막음)·`➖`(권장). 예: `| Dockerfile | ✅ | 배포에 쓸 Dockerfile이 있어요. |`.
+- `DEPLOY_PROMPTS` — 배포 준비 문제 시 복붙 프롬프트 블록(`SECURITY_PROMPTS` 와 동일 형식). 없으면 비운다.
+- `ENV_ROWS` — 설정값 정리 **표 행**. `| 설정값 이름 | 다루는 방법 | 설명 |` 순서. 다루는 방법은 한글로(영어 분류명 노출 금지): `build`→`화면(브라우저)에 포함될 수 있음 → 비밀번호·키 넣지 말 것`, `runtime`→`서버에서만 쓰는 일반 값`, `locked`→`비밀번호·키 → 안전하게 잠가서 보관(화면 노출 금지)`. 예: `| \`DATABASE_URL\` | 비밀번호·키 → 안전하게 잠가서 보관(화면 노출 금지) | 데이터베이스 접속 정보 |`.
 
-**② 스크립트로 조립한다** — 출력은 대상 경로 하위 `.fursys-deploy-hub/security-report-<YYYYMMDD-HHMM>.html`.
+**② 스크립트로 조립한다** — 출력은 대상 경로 하위 `.fursys-deploy-hub/security-report-<YYYYMMDD-HHMM>.md`.
 ```bash
 TS=$(date '+%Y%m%d-%H%M')
-"$CLAUDE_PLUGIN_ROOT/skills/security-review/scripts/render-report.sh" \
+"$CLAUDE_PLUGIN_ROOT/skills/security-review/scripts/render-report-md.sh" \
   ".fursys-deploy-hub/_render-values.txt" \
-  ".fursys-deploy-hub/security-report-${TS}.html"
+  ".fursys-deploy-hub/security-report-${TS}.md"
 ```
-- 첫 줄이 `RENDERED <경로>` 면 성공 — 그 경로를 7단계에서 안내한다. `NO_VALUES`/`NO_TEMPLATE` 면 원인을 알리고 멈춘다(임의로 HTML을 손으로 쓰지 말 것). (`$CLAUDE_PLUGIN_ROOT` 가 안 잡히면 스킬 폴더의 절대경로로 실행.)
-- `last-verdict.json`(5-1)의 `report` 필드에 이 HTML 경로를 적는다.
+- 첫 줄이 `RENDERED <경로>` 면 성공. `NO_VALUES`/`NO_TEMPLATE` 면 원인을 알리고 멈춘다(임의로 `.md` 를 손으로 쓰지 말 것). (`$CLAUDE_PLUGIN_ROOT` 가 안 잡히면 스킬 폴더의 절대경로로 실행.)
+- `last-verdict.json`(5-1)의 `report` 필드에 이 `.md` 경로를 적는다.
 
-**③ 같은 조각을 구조화 JSON `.fursys-deploy-hub/_report-data.json` 으로도 Write 한다(deploy 서버 등록용).** 로컬 HTML 의 placeholder 와 **같은 내용**을 board 서버 렌더(`/report/<token>`)도 쓰도록, ①의 placeholder 조각을 그대로 구조화 값으로 옮긴 것이다. **HTML 태그 없이 값만** 담는다(board 가 자기 템플릿으로 렌더). 이 파일은 `/deploy`(⑤-1) 등록 때 빌더의 `--report-data` 로 실린다. 없거나 깨져도 등록은 진행되며(로컬 HTML 폴백) URL 만 안 나온다.
-  - **엔진 파트는 넣지 않는다**(summary·findings·env_vars·engine_verdict 는 board 가 저장된 엔진 컬럼으로 렌더 — 중복·재전송 금지). 여기엔 **엔진에 없는 LLM/배포준비 산출물만**.
-  - **시크릿 평문 금지**(엔진 마스킹 형태만). prompts/owaspFindings 에 키·비번 값 그대로 넣지 말 것.
-  - placeholder ↔ _report-data.json 필드 1:1 매핑(이 매핑은 board 서버 렌더에도 동일하게 적용된다):
+**③ 완성된 `.md` 를 사용자에게 채팅으로 그대로 보여준다(파일 경로도 함께).** 렌더된 `.md` 본문 전체를 채팅에 표시해 사용자가 파일을 열지 않아도 바로 읽게 한다. (board 토큰 리포트 URL 은 `/deploy` 등록 때 만들어진다 — 검토 단계에선 로컬 `.md` 가 폴백이다.)
 
-  | 6단계 placeholder | _report-data.json 필드 | 비고 |
-  |---|---|---|
-  | `SECURITY_BADGE` | `security` (`pass`/`caution`/`blocked`) | 보안 축 결과(3단계, 상향만) |
-  | `DEPLOY_BADGE` | `deployable` (`true`/`false`) | 배포가능 축(4단계) |
-  | `FINAL_LINE` | `finalLine` (텍스트만) | 최종 한 줄(✅/❌) |
-  | (META 검사일시) | `checkedAt` (`"2026-06-17 17:30"`) | 없으면 board 가 등록시각 대체 |
-  | `SECURITY_FINDINGS_ROWS` 중 LLM 심화분 | `owaspFindings[]` | 엔진 findings 는 board 가 합침 — **여기 복제 금지** |
-  | `SECURITY_PROMPTS` | `prompts[]` 중 `kind:"security"` | 복붙 프롬프트 카드 |
-  | `DEPLOY_CHECK_ROWS` | `deployChecks[]` | Dockerfile/포트/시작/설정값/상태점검 |
-  | `DEPLOY_PROMPTS` | `prompts[]` 중 `kind:"deploy"` | 복붙 프롬프트 카드 |
-  | `ENV_ROWS` 의 설명칸 | `envNotes[]` (name→note) | class→다루는 방법은 board 가 엔진 env class 로 결정 |
-
-  최상위 필수: `schemaVersion`(=1), `security`, `deployable`, `final`(`ok`/`blocked`), `finalLine`. 선택: `checkedAt`, `owaspFindings`, `deployChecks`, `prompts`, `envNotes`. 형태는 `references/verdict-upload.md` §4-1 의 예시와 `contracts/security-verdict.schema.json#/$defs/reportData` 를 따른다.
-  - **각 배열의 필드명을 정확히 이대로 쓴다(board 렌더러가 이 키로만 읽는다 — 엔진식 `rule`/`file`/`line`/`note`/`body` 로 쓰지 말 것):**
-    - `owaspFindings[]` = `{severity, location(="파일:줄" 한 문자열, 없으면 생략), type(=유형), message, presumed?, aiPrompt?}` — 엔진처럼 `rule`/`file`/`line` 으로 쪼개지 말고 `location`·`type` 으로.
-    - `deployChecks[]` = `{item(=점검 항목명), status(`ok`/`no`/`skip`), message(=설명)}` — `name`/`note` 아님.
-    - `prompts[]` = `{kind(`security`/`deploy`), severity, title, prompt(=복붙 본문)}` — 본문 키는 `prompt`, `body` 아님.
-    - `envNotes[]` = `{name, note}`.
-  - 각 항목 enum: `owaspFindings[].severity`·`prompts[].severity` = `critical|high|medium|low`, `deployChecks[].status` = `ok`(✅)·`no`(❌, 배포 막음)·`skip`(➖, 권장), `prompts[].kind` = `security`|`deploy`.
-
-리포트 구성(템플릿이 이미 이 순서·스타일로 짜여 있다 — 각 placeholder에 아래 의미를 채운다. CSS/구조는 손대지 않는다):
-
-1. **헤더 / 두 배지** — 메타 4종 + 보안 배지(통과 초록/주의 주황/차단 빨강) + 배포 준비 배지(완료 초록/불가 빨강) + 최종 한 줄(✅ 배포 가능 / ❌ 배포 불가 — 사유) + 치명/높음/중간/낮음 카운트 카드.
-2. **🔒 보안 점검** — 발견된 문제 표(심각도·위치 `file:line`(없으면 `-`)·유형 `rule`·설명 `message`, 엔진 findings + LLM 심화(추정 표기 가능)). `inGitHistory:true` 행은 `class="git-warn"` + "기록(git 이력)에 남음" + 경고: "코드에서 지워도 과거 기록에 남아 있으니, 해당 키를 **반드시 폐기·재발급** 하고 IT본부에 알리세요." 그 뒤 `aiPrompt` 있는 치명/높음마다 복붙 프롬프트 카드(전문 그대로, 안내 문구 포함; null이면 설명만).
-3. **🚀 배포 준비** — Dockerfile/포트 일치/시작 방법/필수 설정값/상태점검(HEALTHCHECK) 각 ✅·❌·➖ + 쉬운 설명(막는 항목 강조). 문제 시 복붙 프롬프트(예: Dockerfile 없음 → `references/framework-rules.md` 해당 스택 ② 사내 서버 배포 요건(포트·시작 명령·`0.0.0.0` 바인딩 등) 반영한 표준 Dockerfile 생성; Compose만 있으면 전환 프롬프트). 문제 없으면 `{{DEPLOY_PROMPTS}}` 는 비움.
-4. **설정값 정리표** — 이름(`name`)·다루는 방법·설명. 영어 분류명(`class`) 노출 금지. 다루는 방법: `build`="화면(브라우저)에 포함될 수 있음 → 비밀번호·키 넣지 말 것", `runtime`="서버에서만 쓰는 일반 값", `locked`="비밀번호·키 → 안전하게 잠가서 보관(화면 노출 금지)".
+리포트 섹션 구조(템플릿이 이미 이 순서로 짜여 있다 — 각 placeholder에 위 의미를 채운다):
+1. **헤더** — 메타 4종 + 보안 배지(통과/주의/차단) + 배포 준비 배지(완료/불가) + 최종 한 줄(✅/❌) + 발견 요약 한 줄.
+2. **🔒 보안 점검** — 발견된 문제 표(심각도·위치·유형·설명, 엔진 findings + LLM 심화). git 이력 항목은 폐기·재발급·IT본부 통보 경고. `aiPrompt` 있는 치명/높음마다 복붙 프롬프트 블록.
+3. **🚀 배포 준비** — Dockerfile/포트 일치/시작 방법/필수 설정값/상태점검 각 ✅·❌·➖ + 쉬운 설명. 문제 시 복붙 프롬프트.
+4. **⚙️ 설정값 정리** — 이름·다루는 방법(한글)·설명. 영어 분류명 노출 금지.
 
 ## 7) 결과 안내 (한글, 쉬운 말)
-**리포트 안내 — 검토 단계에선 로컬 HTML 경로를 안내한다:**
-- 검토는 서버 등록을 하지 않으므로(등록은 `/deploy` ⑤-1) 여기서는 **로컬 HTML 파일 경로**를 안내한다: "리포트는 여기서 보실 수 있어요: `<로컬 경로>`" (링크/경로는 raw 그대로, 한글 하이퍼링크 금지).
+**리포트 안내 — 검토 단계에선 `.md` 를 채팅에 보여주고 로컬 경로도 안내한다:**
+- 6단계 ③에서 만든 `.md` 본문을 **채팅에 그대로 보여준 뒤**, 파일 경로도 한 줄로 알린다: "리포트 파일은 여기에도 저장했어요: `<로컬 .md 경로>`" (링크/경로는 raw 그대로, 한글 하이퍼링크 금지).
 - **서버 토큰 리포트 URL 은 `/deploy` 로 배포할 때 등록되면 그때 안내된다**(검토 단계에선 아직 없음). 함께 한 줄로 알린다: "이 결과는 `/deploy` 할 때 서버에 등록되고, 그때 온라인 리포트 주소도 만들어져요."
-- **로컬 HTML 은 어느 경우든 6단계에서 항상 만든다**(폴백). URL 안내는 그 위에 얹는 것뿐이다.
+- **로컬 `.md` 는 어느 경우든 6단계에서 항상 만든다**(폴백). URL 안내는 그 위에 얹는 것뿐이다.
 
-생성한 HTML **파일 경로**를 알려주고 브라우저로 열어 확인하도록 안내한다. 두 축을 **각각** 전하고 최종 배포 가능 여부를 말한다.
+두 축을 **각각** 전하고 최종 배포 가능 여부를 말한다.
 - **🔒 보안:** 통과 ✅ / 주의 ⚠️(높음 — 수정 권장) / 차단 🔴(반드시 고친 뒤 재검사).
 - **🚀 배포 준비:** 가능 ✅ / 불가 ❌(사유: Dockerfile 없음·포트 불일치·시작 명령 없음·필수 설정값 누락 등 — 리포트의 복붙 프롬프트로 해결).
 - **최종:**
-  - 둘 다 OK → "✅ **배포 가능**합니다. 이제 '사내 서버에 올려줘'라고 하면 최초 생성·배포가 진행됩니다."
-  - 보안 차단 → "🔴 보안 때문에 배포할 수 없어요. 리포트의 복붙 수정 프롬프트로 고친 뒤 **배포 전 검토를 다시 실행**하세요."
-  - 배포 불가 → "❌ 보안은 괜찮지만 **아직 배포할 준비가 안 됐어요**(사유). 리포트의 복붙 프롬프트로 준비한 뒤 다시 검토하세요."
-  - 둘 다 막힘 → 두 가지 모두 안내하고 각각의 복붙 프롬프트로 고친 뒤 재검토 안내.
+  - 둘 다 OK → "✅ **배포 가능**합니다. 이제 `/deploy` 라고 하시면 최초 생성·배포가 진행됩니다."
+  - 보안 차단 → "🔴 보안 때문에 배포할 수 없어요. 리포트의 복붙 수정 프롬프트로 직접 고치셔도 되고, **`/deploy-fix` 라고 하시면 제가 고쳐드려요**(고친 뒤 자동으로 다시 검토까지 해드려요)."
+  - 배포 불가 → "❌ 보안은 괜찮지만 **아직 배포할 준비가 안 됐어요**(사유). 리포트의 복붙 프롬프트로 직접 준비하셔도 되고, **`/deploy-fix` 라고 하시면 제가 고쳐드려요.**"
+  - 둘 다 막힘 → 두 가지 모두 안내하고, **"`/deploy-fix` 라고 하시면 제가 한 번에 고쳐드려요"** 를 함께 안내한다.
+- **문제가 하나라도 있으면(주의/차단/배포 불가) 항상 끝에 한 줄을 덧붙인다:** "문제가 있으면 **`/deploy-fix`** 라고 하시면 제가 고쳐드려요."
 
 ## 금지
-- HTML 리포트 본체를 배포 시스템에 올리지 않는다(리포트는 로컬 HTML까지만). 구조화 검토 결과의 서버 등록(프록시 `/verdict`)은 검토가 아니라 **`/deploy`(⑤-1)** 가 한다(배포 게이트 입력).
+- `.md` 리포트 본체의 서버 등록(프록시 `/verdict`)은 검토가 아니라 **`/deploy`(⑤-1)** 가 한다(배포 게이트 입력). 검토는 로컬 `.md` 까지만 만든다.
 - 엔진 결과 없이 보안/배포 가능 여부를 임의로 단정하지 않는다.
 - 시크릿 본체(평문 키 값)를 리포트/화면에 그대로 출력하지 않는다(엔진 마스킹 형태를 따른다).
 - 외부 호스팅 가이드·인계 메시지·사내 호스팅 관리화면 수동 입력 단계는 만들지 않는다(플러그인은 자동 배포).

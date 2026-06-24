@@ -7,7 +7,7 @@ description: 사내 서버에 자기 앱을 처음으로 생성·올린다. **�
 
 ## 역할 경계 (먼저 확인)
 - 너는 **실제로 올리는("배포해줘/올려줘/deploy")** 요청만 처리한다.
-- **"배포 가능한지/배포해도 되는지 검토·점검·확인", "다시 검토", "배포 준비 됐는지"** 같은 **검토 요청은 너의 일이 아니라 `security-review`(배포 전 검토) 스킬의 일**이다. 이때는 직접 Bash로 점검해 텍스트로 답하지 말고, **배포 전 검토를 안내·위임**한다("'배포 전 검토 해줘'(또는 `/deploy-check`)라고 하시면 보안+배포가능성을 점검해 HTML 리포트로 알려드려요"). 검토는 리포트(HTML)를 남기지만 인라인 점검은 리포트를 남기지 못한다.
+- **"배포 가능한지/배포해도 되는지 검토·점검·확인", "다시 검토", "배포 준비 됐는지"** 같은 **검토 요청은 너의 일이 아니라 `security-review`(배포 전 검토) 스킬의 일**이다. 이때는 직접 Bash로 점검해 텍스트로 답하지 말고, **배포 전 검토를 안내·위임**한다("'배포 전 검토 해줘'(또는 `/deploy-check`)라고 하시면 보안+배포가능성을 점검해 리포트로 알려드려요"). 검토는 `.md` 리포트를 남기지만 인라인 점검은 리포트를 남기지 못한다.
 - 배포 진행 중 Dockerfile 부재 등 막히는 점을 발견하면, 거기서 멈추고 **배포 전 검토로 리포트를 받아 고치도록** 안내한다.
 
 ## 비개발자 대화 원칙 (가장 중요 — 항상 지킬 것)
@@ -119,21 +119,25 @@ test -f .fursys-deploy-hub/services.json && echo HAS_MANIFEST || echo NO_MANIFES
 COMMIT=$(git rev-parse HEAD 2>/dev/null || echo null)
 test -f .fursys-deploy-hub/last-verdict.json && cat .fursys-deploy-hub/last-verdict.json || echo NO_VERDICT
 ```
-- **파일이 없으면(NO_VERDICT)** → "먼저 **'배포 전 검토 해줘'**(또는 `/deploy-check`) 를 실행해 통과해야 배포할 수 있어요. 보안과 배포 준비를 점검해 HTML 리포트로 알려드려요." 안내하고 **여기서 멈춘다(배포 스크립트 호출 안 함).**
+- **파일이 없으면(NO_VERDICT)** → "먼저 **'배포 전 검토 해줘'**(또는 `/deploy-check`) 를 실행해 통과해야 배포할 수 있어요. 보안과 배포 준비를 점검해 리포트로 알려드려요." 안내하고 **여기서 멈춘다(배포 스크립트 호출 안 함).**
 - **파일의 `commit` 이 현재 `COMMIT` 과 다르면** → "검토 이후 코드가 바뀌었어요. **'배포 전 검토'를 다시 돌려** 통과시킨 뒤 배포해주세요." **멈춘다.**
 - **`final` 이 `"ok"` 가 아니면** → "아직 통과가 아니에요(보안 차단 또는 배포 준비 미완). 리포트의 복붙 수정 프롬프트로 고친 뒤 **배포 전 검토를 다시 실행**해주세요." **멈춘다.**
   - (예외) 보안 `blocked` 가 **오탐이 확실**할 때만, 현재 코드 버전의 IT본부 예외 승인 여부를 확인해 승인됐으면 진행할 수 있다. 예외 확인·요청은 `references/exceptions.md` 를 그때 읽어 따른다(프록시 `/exceptions/check`·`/exceptions`).
 - **`final` == `"ok"` 이고 `commit` 이 현재 코드와 일치** → ⑤-1(검토 결과 등록)으로 진행한다.
 
 ## ⑤-1 검토 결과 서버 등록 (배포 게이트 입력 — 등록은 여기서 한다)
-배포 게이트는 **서버에 등록된 검토 기록**을 본다. 등록은 **배포 전 검토(deploy-check)가 아니라 이 단계에서** 한다 — 배포 키가 ②에서 이미 확보돼 있고, "배포" 맥락이라 외부 전송이 정상 처리되기 때문이다. ⑤에서 읽은 `last-verdict.json` 의 값과 검토가 남긴 산출물(`_engine.json`·`_report-data.json`)로 등록한다. **본문 JSON 을 손으로 쓰지 않는다 — 빌더가 산출물에서 기계 조립한다.**
+배포 게이트는 **서버에 등록된 검토 기록**을 본다. 등록은 **배포 전 검토(deploy-check)가 아니라 이 단계에서** 한다 — 배포 키가 ②에서 이미 확보돼 있고, "배포" 맥락이라 외부 전송이 정상 처리되기 때문이다. ⑤에서 읽은 `last-verdict.json` 의 값과 검토가 남긴 산출물(`_engine.json` + 렌더된 `.md` 리포트)로 등록한다. **본문 JSON 을 손으로 쓰지 않는다 — 빌더가 산출물에서 기계 조립한다.** `--report-data` 에는 검토가 만든 **`.md` 리포트 파일**(`last-verdict.json` 의 `report` 경로, 보통 `.fursys-deploy-hub/security-report-<TS>.md`)을 넘긴다 — 빌더가 그 본문을 문자열로 읽어 싣고 board 가 마크다운으로 렌더한다.
 ```bash
 RR="$CLAUDE_PLUGIN_ROOT/skills/security-review"   # 안 잡히면: RR="$(find "$HOME/.claude/plugins" -path '*/fursys-deploy-hub/skills/security-review' -type d 2>/dev/null | head -1)"
 # <SEC>/<DEP>/<FIN> = ⑤에서 읽은 last-verdict.json 의 security / deployable / final 값 그대로
+# REPORT_MD = last-verdict.json 의 report 경로(렌더된 .md). 없으면 .fursys-deploy-hub 에서 최신 security-report-*.md 를 쓴다.
+REPORT_MD="$(grep -oE '"report"[[:space:]]*:[[:space:]]*"[^"]+"' .fursys-deploy-hub/last-verdict.json 2>/dev/null | sed -E 's/.*"report"[[:space:]]*:[[:space:]]*"([^"]+)".*/\1/')"
+[ -z "$REPORT_MD" ] && REPORT_MD="$(ls -1t .fursys-deploy-hub/security-report-*.md 2>/dev/null | head -1)"
 "$RR/scripts/verdict-build.sh" ".fursys-deploy-hub/_engine.json" "fursys-group-hub/<REPO>" "$COMMIT" "<SEC>" "<DEP>" "<FIN>" \
-  --report-data ".fursys-deploy-hub/_report-data.json" \
+  --report-data "$REPORT_MD" \
   | "$RR/scripts/verdict-upload.sh" "fursys-group-hub/<REPO>" "$COMMIT"
 ```
+- 비ASCII→`\uXXXX` 인코딩(WAF 대응)·node 직렬화기·`--data-binary` stdin 등 기존 안전장치는 그대로 동작한다(report_data 가 마크다운 문자열이어도 전체 본문은 여전히 유효 JSON — 한글은 `\uXXXX` 로 이스케이프됨). `.md` 가 없으면 빌더가 report_data 없이 보내고 등록은 진행된다(URL 만 안 나옴 = 로컬 `.md` 폴백).
 첫 줄 결과 코드로 분기한다:
 - **`STORED <리포트 URL>`** 또는 **`STORED`** → 등록 완료. ⑥으로 진행한다. (URL 이 있으면 ⑧ 마무리에서 "검토 리포트: `<URL>`" 로 함께 안내한다.)
 - **`NO_KEY`** → ②(키 입력)로 보낸 뒤, 키 저장 후 이 단계부터 다시.
@@ -212,7 +216,7 @@ printf '%s' "$ENV_JSON" | "$CLAUDE_PLUGIN_ROOT/skills/deploy/scripts/deploy.sh" 
 - **어떻게 고치는지**: "아래 문장을 복사해서 저(또는 코드 도우미)에게 그대로 붙여넣어 주세요." + 복붙용 수정 프롬프트(코드블록).
 - **다음 단계(같은 앱을 고쳐서 다시 올리면 됨):** "고친 뒤 **저장(`git push`)만 하면 자동으로 다시 올라가요.** 같은 앱에 다시 올라가니 **앱을 새로 만들 필요도, 배포 명령을 또 누를 필요도 없어요.**"
   - **반드시 함께 전한다(앱 삭제→재생성 악순환 차단):** "**앱을 지우지 마세요.** 어디서 막혔는지(위 빌드 기록)를 보고 코드를 고친 뒤 저장(`git push`)하면 **같은 앱에 자동으로 다시 시도**됩니다(처음부터 다시 만들 필요 없어요)."
-  - (보안 검토를 통과시켜야 하는 경우) "고친 뒤 **'배포 전 검토 해줘'** 를 다시 돌려 통과시키면 돼요."
+  - (보안 검토를 통과시켜야 하는 경우) "고친 뒤 **'배포 전 검토 해줘'(`/deploy-check`)** 를 다시 돌려 통과시키면 돼요. 직접 고치기 어려우면 **`/deploy-fix` 라고 하시면 제가 고쳐드려요**(고친 뒤 자동으로 다시 검토까지 해드려요)."
 
 **5) 민감한 값 주의(중요):**
 빌드 기록은 시스템이 1차로 민감한 값을 가려서 주지만, **사용자 코드가 자기 비밀번호·키를 빌드 중에 직접 찍어 출력했다면 그 값은 가려지지 않을 수 있다.** 로그를 화면에 옮길 때는 **원문을 통째로 붙이지 말고**, 원인이 된 핵심 줄만 추린다. 혹시 비밀번호·키처럼 보이는 값이 로그에 보이면 그대로 보여주지 말고, "코드에서 비밀번호·키를 화면에 출력하는 부분이 있으면 빼주세요"라고 함께 안내한다.

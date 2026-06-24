@@ -10,11 +10,13 @@
 #   <deployable>       : "true" | "false"
 #   <security>         : "pass" | "caution" | "blocked"   (LLM 심화 반영한 최종 보안 축)
 #   <final>            : "ok" | "blocked"
-#   --report-data <path> : (선택) 엔진에 없는 LLM/배포준비 산출물 JSON(예: .fursys-deploy-hub/_report-data.json).
-#                          있으면 본문 report_data 키로 함께 싣는다 → 등록 성공 시 board 가 추측 불가 토큰 URL 발급.
-#                          파일이 없거나 비었거나 JSON 이 깨지면 무시하고 report_data 없이 진행(=구버전 동작, stderr 경고).
-#                          report_data 는 LLM 산출물(배지/최종라인/owaspFindings/deployChecks/prompts/envNotes)이며,
-#                          엔진 파트(summary/findings/env_vars/engine_verdict)는 절대 다시 싣지 않는다(중복 금지).
+#   --report-data <path> : (선택) 렌더된 `.md` 리포트 파일(예: .fursys-deploy-hub/security-report-<TS>.md).
+#                          있으면 그 파일을 **문자열로 읽어** 본문 report_data 키로 싣는다(마크다운 본문 그대로,
+#                          JSON.parse 하지 않음) → 등록 성공 시 board 가 마크다운으로 렌더하고 추측 불가 토큰 URL 발급.
+#                          파일이 없거나 비면 무시하고 report_data 없이 진행(=로컬 .md 폴백, stderr 경고).
+#                          report_data = 완성 마크다운 문자열(엔진 요약/findings/env 흡수). board 는 .md 한 장만 렌더한다.
+#                          엔진 파트(summary/findings/env_vars/engine_verdict)는 게이트·교차검증·감사용으로 이와 별개로
+#                          기존대로 본문에 계속 싣는다(마크다운과는 무관).
 # 출력(stdout): 유효한 VerdictBody JSON 한 줄. 이걸 그대로 verdict-upload.sh 의 stdin 으로 넘긴다.
 #   실패 시 stderr 에 사유, exit!=0 (이때 등록을 건너뛴다).
 set -uo pipefail
@@ -51,8 +53,9 @@ fi
 
 # 엔진 JSON(위험한 값 포함)은 node 가 읽어 직렬화기로 본문에 싣는다 — 사람이 안 건드린다.
 # 스칼라는 argv 로 안전하게 전달. 출력은 JSON.stringify 산물이라 항상 유효 JSON.
-# report_data 도 별도 파일에서 node 가 읽어 싣는다(LLM 이 손으로 본문에 박지 않게 — #5 원칙).
-#   깨진 report_data 는 등록 자체를 막지 않도록 무시하고 진행(stderr 경고).
+# report_data 는 렌더된 .md 파일을 node 가 **문자열로** 읽어 싣는다(마크다운 본문 그대로, JSON.parse 안 함).
+#   JSON.stringify 가 따옴표·역슬래시·줄바꿈을 정확히 이스케이프하므로 본문은 항상 유효 JSON 으로 유지된다.
+#   파일이 없거나 비면 등록 자체를 막지 않도록 무시하고 진행(stderr 경고).
 node -e '
 const fs = require("fs");
 const [enginePath, repo, commit, security, deployableStr, final, reportDataPath] = process.argv.slice(1);
@@ -71,12 +74,13 @@ if (eng.target && eng.target.framework) body.framework = eng.target.framework;
 if (Array.isArray(eng.findings) && eng.findings.length) body.findings = eng.findings;       // 엔진 마스킹 형태 그대로
 if (Array.isArray(eng.envVars) && eng.envVars.length) body.env_vars = eng.envVars.map(v => ({ name: v.name, class: v.class }));
 body.engine_verdict = eng;                                                                   // 감사·재현용 원본
-// report_data: 엔진에 없는 LLM/배포준비 산출물. 깨지면 무시(등록은 진행).
+// report_data: 렌더된 .md 본문을 문자열로 싣는다(JSON.parse 하지 않음 — 마크다운 그대로).
+//   비면 무시하고 report_data 없이 진행(로컬 .md 폴백). board 가 string 으로 받아 마크다운 렌더.
 if (reportDataPath) {
   try {
-    const rd = JSON.parse(fs.readFileSync(reportDataPath, "utf8"));
-    if (rd && typeof rd === "object" && !Array.isArray(rd)) body.report_data = rd;
-    else console.error("REPORT_DATA_IGNORED: JSON 이 객체가 아니라 무시합니다");
+    const md = fs.readFileSync(reportDataPath, "utf8");
+    if (md && md.trim().length) body.report_data = md;            // ★ 문자열 그대로
+    else console.error("REPORT_DATA_IGNORED: .md 본문이 비어 무시합니다 (report_data 없이 진행)");
   } catch (e) {
     console.error("REPORT_DATA_IGNORED: " + e.message + " (report_data 없이 진행)");
   }
