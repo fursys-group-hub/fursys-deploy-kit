@@ -47,7 +47,7 @@ proxy는 GitHub(`fursys-group-hub/<repo>`)에 **이미 올라간 코드**로 앱
 git remote -v
 git status --porcelain
 ```
-- **원격이 `fursys-group-hub/<repo>` 이고 이미 올라가 있으면** → repo 식별자를 `fursys-group-hub/<레포이름>` 으로 확정하고(`deploy.sh` 의 `repo` 인자) 다음으로 진행한다. (커밋 안 된 변경분이 남아 있으면 "최신 코드를 먼저 올릴게요" 안내 후 `git push` 로 올린다.)
+- **원격이 `fursys-group-hub/<repo>` 이고 이미 올라가 있으면** → repo 식별자를 `fursys-group-hub/<레포이름>` 으로 확정하고(`deploy.sh` 의 `repo` 인자) 다음으로 진행한다. (커밋 안 된 변경분이 남아 있으면 "최신 코드를 먼저 올릴게요" 안내 후 `git add -A && git commit && git push` 로 올린다 — **이 커밋이 ⑤ 게이트가 비교할 배포 트리를 만든다(커밋/푸시는 게이트보다 먼저 일어난다).** 커밋 후 HEAD = 실제 배포 커밋이다. deploy-fix 가 작업트리만 고쳐 둔 경우에도 여기서 비로소 커밋되므로 commit SHA 가 바뀌지만, ⑤가 **내용(tree) 기준**으로 비교하므로 재검토 없이 통과한다.)
 - **원격이 회사 GitHub가 아니거나, git 원격이 아예 없으면** → 배포를 진행하지 않고 **github-setup 으로 안내**하고 멈춘다(가입·연결·등록이 먼저다 — deploy 스크립트를 호출하지 않는다):
   > "배포하려면 코드가 회사 GitHub(`fursys-group-hub`)에 올라가 있어야 해요. **'깃허브 연결해줘'(또는 `/github-setup`)** 라고 하시면, 연결 상태를 확인하고 가입이 필요하면 신청을 돕고, 되면 이 프로젝트를 올려드릴게요."
 
@@ -116,15 +116,21 @@ test -f .fursys-deploy-hub/services.json && echo HAS_MANIFEST || echo NO_MANIFES
 
 ## ⑤ 배포 전 검토 게이트 — 로컬 빠른 확인 (UX용. 진짜 강제는 서버가 함)
 배포 전 검토(security-review)가 남긴 **검토 결과 파일**을 읽어, 통과한 코드만 올린다. 이 파일은 **빠른 실패(UX)용**이다 — 검토를 안 했거나 통과 못 한 걸 미리 잡아 헛수고(중복 생성·실패 재시도)를 막는다. **진짜 강제는 서버(중앙 배포 시스템)가 한다**: 서버는 등록된 검토 기록을 보고, 통과하지 못한 코드면 ⑥에서 `409`(`verdict_blocked`/`no_verdict`)로 거부한다(⑦ 참조). 그러니 이 파일이 없거나 미통과면 여기서 미리 멈춰 사용자를 돕는다. 프로젝트 루트의 `.fursys-deploy-hub/last-verdict.json` 을 읽는다:
+**① 커밋/푸시가 이 단계보다 먼저 끝나 있다(중요).** 그러므로 여기서 `COMMIT`/`HEAD_TREE` 는 **실제 배포될 커밋(현재 HEAD)** 기준이다.
 ```bash
 COMMIT=$(git rev-parse HEAD 2>/dev/null || echo null)
+# 배포할 커밋(① 커밋 후의 HEAD)의 트리 해시 = push 로 GitHub·Coolify 가 당겨 배포하는 그 내용.
+HEAD_TREE=$(git rev-parse 'HEAD^{tree}' 2>/dev/null || echo null)
 test -f .fursys-deploy-hub/last-verdict.json && cat .fursys-deploy-hub/last-verdict.json || echo NO_VERDICT
 ```
-- **파일이 없으면(NO_VERDICT)** → "먼저 **'배포 전 검토 해줘'**(또는 `/deploy-check`) 를 실행해 통과해야 배포할 수 있어요. 보안과 배포 준비를 점검해 리포트로 알려드려요." 안내하고 **여기서 멈춘다(배포 스크립트 호출 안 함).**
-- **파일의 `commit` 이 현재 `COMMIT` 과 다르면** → "검토 이후 코드가 바뀌었어요. **'배포 전 검토'를 다시 돌려** 통과시킨 뒤 배포해주세요." **멈춘다.**
-- **`final` 이 `"ok"` 가 아니면** → "아직 통과가 아니에요(보안 차단 또는 배포 준비 미완). 리포트의 복붙 수정 프롬프트로 고친 뒤 **배포 전 검토를 다시 실행**해주세요." **멈춘다.**
-  - (예외) 보안 `blocked` 가 **오탐이 확실**할 때만, 현재 코드 버전의 IT본부 예외 승인 여부를 확인해 승인됐으면 진행할 수 있다. 예외 확인·요청은 `references/exceptions.md` 를 그때 읽어 따른다(프록시 `/exceptions/check`·`/exceptions`).
-- **`final` == `"ok"` 이고 `commit` 이 현재 코드와 일치** → ⑤-1(검토 결과 등록)으로 진행한다.
+판정 순서(treegate — 위에서 아래로 처음 맞는 것 적용):
+1. **파일이 없으면(NO_VERDICT)** → "먼저 **'배포 전 검토 해줘'**(또는 `/deploy-check`) 를 실행해 통과해야 배포할 수 있어요. 보안과 배포 준비를 점검해 리포트로 알려드려요." 안내하고 **여기서 멈춘다(배포 스크립트 호출 안 함).**
+2. **`final` 이 `"ok"` 가 아니면** → "아직 통과가 아니에요(보안 차단 또는 배포 준비 미완). 리포트의 복붙 수정 프롬프트로 고친 뒤 **배포 전 검토를 다시 실행**해주세요." **멈춘다.**
+   - (예외) 보안 `blocked` 가 **오탐이 확실**할 때만, 현재 코드 버전의 IT본부 예외 승인 여부를 확인해 승인됐으면 진행할 수 있다. 예외 확인·요청은 `references/exceptions.md` 를 그때 읽어 따른다(프록시 `/exceptions/check`·`/exceptions`).
+3. **(treegate 1순위) 파일에 `tree` 가 있고(옛 형식 아님) `tree == HEAD_TREE` 면** → **통과**(commit SHA 가 달라도 무시 — 내용이 검토된 것과 같으면 같은 코드다). ⑤-1 로 진행한다. **이게 deploy-fix(커밋 안 함)→deploy ①(커밋) 으로 SHA 가 바뀌어도 재검토를 안 만드는 핵심이다.**
+4. **(treegate) 파일에 `tree` 가 있는데 `tree != HEAD_TREE` 면** → "검토 이후 코드가 실제로 바뀌었어요. **'배포 전 검토'를 다시 돌려** 통과시킨 뒤 배포해주세요." **멈춘다**(내용이 달라진 진짜 변경 — 정확한 재검토 요구).
+5. **(폴백 — `tree` 가 없는 옛 형식 last-verdict)** → 현행 commit 비교: **`commit == COMMIT` 이면 통과**, 다르면 "검토 이후 코드가 바뀌었어요. **'배포 전 검토'를 다시 돌려** 통과시킨 뒤 배포해주세요." **멈춘다.** (하위호환·안전 — 옛 kit 이 만든 verdict 는 tree 가 없으므로 현행 동작 그대로.)
+- 즉 **`tree` 가 있으면 tree 만으로 판정하고 commit SHA 불일치는 무시한다**(commit 비교는 tree 가 없을 때의 폴백뿐).
 
 ## ⑤-1 검토 결과 서버 등록 (배포 게이트 입력 — 등록은 여기서 한다)
 배포 게이트는 **서버에 등록된 검토 기록**을 본다. 등록은 **배포 전 검토(deploy-check)가 아니라 이 단계에서** 한다 — 배포 키가 ②에서 이미 확보돼 있고, "배포" 맥락이라 외부 전송이 정상 처리되기 때문이다. ⑤에서 읽은 `last-verdict.json` 의 값과 검토가 남긴 산출물(`_engine.json` + 렌더된 `.md` 리포트)로 등록한다. **본문 JSON 을 손으로 쓰지 않는다 — 빌더가 산출물에서 기계 조립한다.** `--report-data` 에는 검토가 만든 **`.md` 리포트 파일**(`last-verdict.json` 의 `report` 경로, 보통 `.fursys-deploy-hub/security-report-<TS>.md`)을 넘긴다 — 빌더가 그 본문을 문자열로 읽어 싣고 board 가 마크다운으로 렌더한다.
@@ -138,9 +144,11 @@ REPORT_MD="$(grep -oE '"report"[[:space:]]*:[[:space:]]*"[^"]+"' .fursys-deploy-
   --report-data "$REPORT_MD" \
   | "$RR/scripts/verdict-upload.sh" "fursys-group-hub/<REPO>" "$COMMIT"
 ```
+- **여기 `$COMMIT` 은 ① 커밋/푸시 후의 HEAD(=실제 배포 커밋)다 — 서버 게이트가 그 커밋을 통과시킨다.** (⑤에서 산출한 그 값을 그대로 쓴다. ①이 ⑤보다 먼저 커밋했으므로 HEAD = 배포 커밋이라 이미 올바르다 — verdict 가 실제 배포되는 커밋에 등록되어 서버 게이트의 `no_verdict` 가 방지된다.)
 - 비ASCII→`\uXXXX` 인코딩(WAF 대응)·node 직렬화기·`--data-binary` stdin 등 기존 안전장치는 그대로 동작한다(report_data 가 마크다운 문자열이어도 전체 본문은 여전히 유효 JSON — 한글은 `\uXXXX` 로 이스케이프됨). `.md` 가 없으면 빌더가 report_data 없이 보내고 등록은 진행된다(URL 만 안 나옴 = 로컬 `.md` 폴백).
 첫 줄 결과 코드로 분기한다:
 - **`STORED <리포트 URL>`** 또는 **`STORED`** → 등록 완료. ⑥으로 진행한다. (URL 이 있으면 ⑧ 마무리에서 "검토 리포트: `<URL>`" 로 함께 안내한다.)
+  - **(treegate) 등록 성공 후 `last-verdict.json` 의 `commit` 을 현재 HEAD(`$COMMIT`)로 갱신**한다(다음 재실행 시 폴백 비교가 실제 배포 커밋과 일치하도록). 가능하면 `tree` 도 `$HEAD_TREE`(⑤에서 산출)로 정렬해 둔다. **이 갱신은 선택적·실패해도 무해**하다(게이트는 이미 통과한 뒤이고, 서버 등록도 끝났다). git 용어는 사용자에게 노출하지 않는다.
 - **`NO_KEY`** → ②(키 입력)로 보낸 뒤, 키 저장 후 이 단계부터 다시.
 - **`NO_COMMIT`** → 커밋·푸시가 안 된 상태다. `/github-setup`(또는 `git push`)을 안내하고 멈춘다.
 - **`UNAUTHORIZED`** → "배포 키가 유효하지 않거나 회수됐어요. IT본부에 재발급을 요청하세요." 멈춘다(저장된 키 파일 삭제 안내).

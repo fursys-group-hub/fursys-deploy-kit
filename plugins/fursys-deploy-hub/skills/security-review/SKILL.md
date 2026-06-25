@@ -77,9 +77,19 @@ ls -1 docker-compose.yml compose.yaml 2>/dev/null  # compose 있나(구조 힌�
 
 ## 5-1) 검토 결과 파일 기록 (배포 게이트 입력 — 반드시)
 종합 판정 직후, 프로젝트 루트 `.fursys-deploy-hub/last-verdict.json` 을 **반드시 기록**한다(이 파일이 없거나 현재 commit과 안 맞으면 deploy 스킬이 배포를 멈춘다 — 즉 **배포 게이트의 입력**이다).
-- commit/날짜는 Bash로 얻는다:
+- commit/tree/날짜는 Bash로 얻는다:
   ```bash
   COMMIT=$(git rev-parse HEAD 2>/dev/null || echo null)
+  # (treegate) 검증한 작업트리 *내용*의 git 트리 해시 — deploy ① 의 'git add -A' 와 동일 파일집합 기준,
+  #  임시 인덱스(GIT_INDEX_FILE)로 작업트리/실제 인덱스 비파괴 산출(docs/CONTRACTS.md §6.1.1 동일 규약).
+  _fdh_tree() {
+    local idx; idx="$(mktemp -t fdhidx.XXXXXX 2>/dev/null || echo "$(git rev-parse --git-dir)/fdh-tmpidx.$$")"
+    rm -f "$idx"
+    GIT_INDEX_FILE="$idx" git add -A 2>/dev/null
+    GIT_INDEX_FILE="$idx" git write-tree 2>/dev/null
+    rm -f "$idx"
+  }
+  TREE="$(_fdh_tree)"   # 40자 hex. git 아님/실패 시 빈 문자열 → tree 를 null 로 기록
   # repo 기본 브랜치(deploy 가 이 브랜치로 올린다 — main 가정 금지, master 등 그대로):
   BRANCH=$(git symbolic-ref --short refs/remotes/origin/HEAD 2>/dev/null | sed 's@^origin/@@')
   [ -z "$BRANCH" ] && BRANCH=$(git rev-parse --abbrev-ref HEAD 2>/dev/null); [ -z "$BRANCH" ] && BRANCH=main
@@ -90,6 +100,7 @@ ls -1 docker-compose.yml compose.yaml 2>/dev/null  # compose 있나(구조 힌�
   ```json
   {
     "commit": "<COMMIT, 없으면 null>",
+    "tree": "<TREE, 없으면 null>",
     "branch": "<BRANCH, repo 기본 브랜치>",
     "security": "pass|caution|blocked",
     "deployable": true,
@@ -104,6 +115,7 @@ ls -1 docker-compose.yml compose.yaml 2>/dev/null  # compose 있나(구조 힌�
   }
   ```
   - `security` = 보안 축 결과(통과=`pass`/주의=`caution`/차단=`blocked`), `deployable` = 배포가능 축(가능=`true`/불가=`false`).
+  - **`tree`(treegate) = 위 `_fdh_tree` 로 산출한 검증 작업트리의 git 트리 해시(40자 hex), 없으면 `null`.** 이게 deploy ⑤ 게이트의 **1순위 기준**이다 — deploy-fix 가 커밋 안 한 채 deploy ①이 커밋해 commit SHA 가 바뀌어도, 내용이 같으면 tree 가 같아 통과한다(SHA 무효화 루프 제거). 없으면(옛 형식·git 아님) deploy 가 `commit` 비교로 폴백(하위호환). board 미업로드(로컬 게이트 전용). `commit` 은 현행대로 유지(참고·폴백용).
   - **`volumes_plan` = 4)·5의 영속 볼륨 감지(deploy-readiness §4-1) 결과** — 단일 서비스에서 SQLite·업로드 디렉터리 등을 감지하면 그 **상위 디렉터리** 경로를 배열로 적는다(예: `["/data"]`). deploy 가 이 값을 `--volumes` 로 전달해 재배포해도 데이터가 보존된다. **감지된 게 없으면 이 필드를 생략하거나 `[]`** 로 둔다(볼륨 미요청 — 현행 동일). board 에 업로드되지 않는 로컬 전용 필드다(게이트·verdict shape 불변). 멀티서비스는 이 필드를 쓰지 않고 `services.json` 의 `volumes` 를 쓴다.
   - **`env_plan` = 엔진 `envVars`(name·class) + 4)·심화에서 파악한 처리 메모.** 배포 단계가 코드를 다시 안 뒤지도록 **여기서 미리 채운다**(속도). `note` 규칙: fgdw 계정/비번=`fgdw`(배포 시 공용계정 자동치환), 난수 자동생성 대상(JWT_SECRET 등)=`secret-gen`, 사람이 정할 값/외부 자격증명=`ask`, NEXT_PUBLIC_*·VITE_* 공개주소=`public-url`, 그 외 일반값=`''`. 분류 기준은 `references/env-resolve.md`(deploy 와 동일 규칙)와 owasp/framework 점검 결과를 그대로 반영한다.
   - **`scope` = 4)에서 `deploy-readiness.md §8`(Dockerfile COPY 앵커)로 판정한 결과를 각 항목에 적는다.** 컨테이너 안(빌드+런타임)에서 쓰이면 `"container"`, 배포 컨테이너에 안 들어가는 코드(로컬 ETL·갱신 스크립트, 예 `scripts/fgdw/*.cjs`·`refresh.ps1`)만 쓰면 `"local"`. **기본값은 `container`** — 판정이 불확실하거나 §8 절차를 적용 안 했으면 `"container"` 로 두거나 생략한다(생략 = container, 하위호환). `scope` 는 `class`/`note` 와 직교다(class/note 는 컨테이너 안 처리 방식, scope 는 컨테이너 안/밖). **보수적 편향:** 런타임/빌드 env 를 `local` 로 오판하면 앱이 크래시(치명)하므로, `"local"` 은 Dockerfile 상 컨테이너 밖임이 확실할 때만. **`VITE_*`/`NEXT_PUBLIC_*` 는 빌드타임이라 항상 `container`**(local 금지 — 빌드 깨짐).

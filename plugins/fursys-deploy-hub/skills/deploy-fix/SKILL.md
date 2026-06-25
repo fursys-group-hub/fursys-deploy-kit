@@ -91,6 +91,7 @@ node "$CLAUDE_PLUGIN_ROOT/skills/deploy-fix/scripts/plan-summary.mjs" .fursys-de
 ## ⑥ 자동 재검토 (최대 2라운드 — 진전 없으면 즉시 중단)
 수정 직후 **`/deploy-check`(security-review) 로직을 자동 실행**해 통과 여부를 다시 판정하고, 새 `.md` 리포트·`_engine.json`·`last-verdict.json` 을 갱신한다.
 - **security-review 스킬의 절차(엔진 실행 → 보안 심화 → 배포 가능성 → 종합 판정 → 산출물 기록 → `.md` 리포트 생성)를 그대로 자동 수행**한다(사용자에게 `/deploy-check` 를 다시 치라고 시키지 않는다 — 여기서 자동으로 돌린다).
+  - **(treegate) 이 재검토가 `last-verdict.json` 을 다시 쓸 때, security-review 5-1 의 `_fdh_tree` 산출이 그대로 포함되므로 `tree` 도 함께 갱신된다.** deploy-fix(모드 A)는 **커밋하지 않으므로**(현행 유지), 여기 기록되는 `tree` 는 방금 수정한 **작업트리 내용**의 해시다. deploy ①이 그 작업트리를 커밋하면 commit SHA 는 바뀌어도 tree 는 같아, deploy ⑤ 게이트가 재검토 없이 통과시킨다(SHA 무효화 루프 제거).
 - **루프 방지(반드시):**
   - **최대 2라운드.** (이번 수정 → 재검토 = 1라운드. 여전히 실패면 같은 절차로 한 번 더 = 2라운드까지.)
   - **직전 라운드 대비 finding 수가 줄지 않으면 그 자리에서 즉시 중단**한다(자동으로 못 고치는 신호 — 더 돌리지 않는다).
