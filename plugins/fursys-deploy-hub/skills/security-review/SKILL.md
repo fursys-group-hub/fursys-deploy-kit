@@ -54,7 +54,7 @@ fdh-engine "<대상경로>" --json --no-prompt > .fursys-deploy-hub/_engine.json
 1. **Dockerfile 존재** — `ls -la Dockerfile Dockerfile.* 2>/dev/null || echo NO_DOCKERFILE`. 없으면 **배포 불가(치명)**. Compose/Nixpacks/Buildpacks/정적자동빌드는 불허(Dockerfile만 허용). Compose만 있으면 "Dockerfile로 전환" 안내.
 2. **EXPOSE 포트 ↔ 앱 실제 포트 일치** — `grep -i '^EXPOSE' Dockerfile`. 앱 실제 포트는 코드/실행명령으로 LLM 확인. 불일치 시 높음.
 3. **시작 방법 존재** — `grep -iE '^(CMD|ENTRYPOINT)' Dockerfile`(+ Node면 `package.json` start). 없으면 높음.
-4. **필수 실행 설정값 누락** — 코드가 참조하는 env를 모아 `.env`/검증스키마와 대조, 꼭 필요한데 값/기본값 없는 것 찾기. 누락 시 높음(fgdw 계정은 배포 시 자동 치환되므로 예외 안내).
+4. **필수 실행 설정값 누락** — 코드가 참조하는 env를 모아 `.env`/검증스키마와 대조, 꼭 필요한데 값/기본값 없는 것 찾기. 누락 시 높음(fgdw 계정은 배포 시 자동 치환되므로 예외 안내). **각 env 의 `scope`(컨테이너 안 vs 로컬 도구 전용)도 여기서 `deploy-readiness.md §8`(Dockerfile COPY 앵커)로 판정해 둔다 — 5-1 의 `env_plan` 에 적는다(로컬 ETL 전용 값을 배포에서 묻지 않게).**
 5. **영속 볼륨 필요 감지(단일 서비스)** — `deploy-readiness.md §4-1`. Dockerfile `VOLUME` / SQLite(`better-sqlite3`·`sqlite3`·`DB_PATH=/dir/...`) / 업로드 디렉터리 설정값을 보고 영속 볼륨이 필요한지 감지해, 필요하면 그 **컨테이너 디렉터리 경로**(파일 아닌 상위 디렉터리, 예 `/data`)를 모아 둔다. 이 목록을 5-1의 `volumes_plan` 에 기록한다(deploy 가 `--volumes` 로 전달해 재배포해도 데이터가 보존됨). non-root 앱인데 그 경로를 `USER` 앞에서 `mkdir`+`chown` 하지 않으면 **높음**(배포 후 권한 크래시). 신호 없으면 `volumes_plan` 생략(현행 동일).
 6. **HEALTHCHECK** — `grep -i 'HEALTHCHECK' Dockerfile`. 없으면 낮음(권장, 배포 막지 않음).
 7. 프레임워크 배포 요건: `references/framework-rules.md` 의 감지된 프레임워크 **② 사내 서버 배포 요건** + §8 공통 Dockerfile 점검.
@@ -98,7 +98,7 @@ ls -1 docker-compose.yml compose.yaml 2>/dev/null  # compose 있나(구조 힌�
     "report_url": "<검토 단계에선 보통 생략 — /deploy 등록 성공 시 URL 이 만들어진다>",
     "generated_at": "<NOW>",
     "env_plan": [
-      { "name": "<설정값 이름>", "class": "build|runtime|locked", "note": "fgdw|secret-gen|ask|public-url|''" }
+      { "name": "<설정값 이름>", "class": "build|runtime|locked", "note": "fgdw|secret-gen|ask|public-url|''", "scope": "container|local" }
     ],
     "volumes_plan": ["<감지한 영속 볼륨 컨테이너 디렉터리, 예 /data>"]
   }
@@ -106,6 +106,7 @@ ls -1 docker-compose.yml compose.yaml 2>/dev/null  # compose 있나(구조 힌�
   - `security` = 보안 축 결과(통과=`pass`/주의=`caution`/차단=`blocked`), `deployable` = 배포가능 축(가능=`true`/불가=`false`).
   - **`volumes_plan` = 4)·5의 영속 볼륨 감지(deploy-readiness §4-1) 결과** — 단일 서비스에서 SQLite·업로드 디렉터리 등을 감지하면 그 **상위 디렉터리** 경로를 배열로 적는다(예: `["/data"]`). deploy 가 이 값을 `--volumes` 로 전달해 재배포해도 데이터가 보존된다. **감지된 게 없으면 이 필드를 생략하거나 `[]`** 로 둔다(볼륨 미요청 — 현행 동일). board 에 업로드되지 않는 로컬 전용 필드다(게이트·verdict shape 불변). 멀티서비스는 이 필드를 쓰지 않고 `services.json` 의 `volumes` 를 쓴다.
   - **`env_plan` = 엔진 `envVars`(name·class) + 4)·심화에서 파악한 처리 메모.** 배포 단계가 코드를 다시 안 뒤지도록 **여기서 미리 채운다**(속도). `note` 규칙: fgdw 계정/비번=`fgdw`(배포 시 공용계정 자동치환), 난수 자동생성 대상(JWT_SECRET 등)=`secret-gen`, 사람이 정할 값/외부 자격증명=`ask`, NEXT_PUBLIC_*·VITE_* 공개주소=`public-url`, 그 외 일반값=`''`. 분류 기준은 `references/env-resolve.md`(deploy 와 동일 규칙)와 owasp/framework 점검 결과를 그대로 반영한다.
+  - **`scope` = 4)에서 `deploy-readiness.md §8`(Dockerfile COPY 앵커)로 판정한 결과를 각 항목에 적는다.** 컨테이너 안(빌드+런타임)에서 쓰이면 `"container"`, 배포 컨테이너에 안 들어가는 코드(로컬 ETL·갱신 스크립트, 예 `scripts/fgdw/*.cjs`·`refresh.ps1`)만 쓰면 `"local"`. **기본값은 `container`** — 판정이 불확실하거나 §8 절차를 적용 안 했으면 `"container"` 로 두거나 생략한다(생략 = container, 하위호환). `scope` 는 `class`/`note` 와 직교다(class/note 는 컨테이너 안 처리 방식, scope 는 컨테이너 안/밖). **보수적 편향:** 런타임/빌드 env 를 `local` 로 오판하면 앱이 크래시(치명)하므로, `"local"` 은 Dockerfile 상 컨테이너 밖임이 확실할 때만. **`VITE_*`/`NEXT_PUBLIC_*` 는 빌드타임이라 항상 `container`**(local 금지 — 빌드 깨짐).
   - `branch` 도 함께 적어, deploy 가 브랜치를 재확인하지 않게 한다(deploy.sh 가 자체 해석도 하지만 기록을 남긴다).
   - `report_url` 은 검토 단계에선 **생략**한다(서버 등록은 `/deploy` 가 하므로). /deploy(⑤-1) 등록에서 URL 을 받으면 그때 사용자에게 안내된다.
 

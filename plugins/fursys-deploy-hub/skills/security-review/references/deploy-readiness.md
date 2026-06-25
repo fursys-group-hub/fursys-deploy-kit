@@ -16,6 +16,7 @@
 5. HEALTHCHECK 권장
 6. 설정값 종류 분류 (빌드 포함 / 일반 / 잠금)
 7. 배포가능 축 판정 규칙
+8. 설정값이 컨테이너 안인가 로컬 도구 전용인가 (scope 판정 — Dockerfile 앵커)
 
 ---
 
@@ -153,3 +154,42 @@ grep -i 'HEALTHCHECK' Dockerfile
 - 위 결정적 항목이 모두 통과하면 배포가능 = **가능**.
 
 > 최종 "배포 가능" = (보안 not 차단) AND (배포가능 = 가능). 둘 중 하나라도 막히면 배포 불가.
+
+---
+
+## 8. 설정값이 컨테이너 안인가 로컬 도구 전용인가 (scope 판정 — Dockerfile 앵커)
+
+설정값(env) 중에는 **배포 컨테이너에 아예 안 들어가는 코드**(로컬 ETL·자료 갱신 스크립트, 예 `scripts/fgdw/*.cjs`·`refresh.ps1`)만 쓰는 것이 있다. 이런 값은 배포에 필요 없으므로 deploy 가 묻지도·주입하지도 않아야 한다. 그 구분을 여기서 **Dockerfile COPY 앵커**로 판정해 각 env 에 `scope`(`container`/`local`)를 부여한다. 결과는 5-1(security-review SKILL)의 `env_plan[].scope` 에 적는다.
+
+> **`scope` 와 `class`/`note` 는 직교다.** `class`(build/runtime/locked)·`note`(fgdw/ask 등) = *컨테이너 안에서* 그 env 를 어떻게 다루나. `scope` = *컨테이너 안에 들어가나(빌드+런타임), 로컬 도구 전용이나.* 둘을 합치지 말 것. **기본값은 `container`**(생략 = container, 하위호환).
+
+### 판정 절차 (결정적 — 휴리스틱·폴더이름 추측 금지)
+1. **COPY 대상 파일집합 산출.** Dockerfile(루트, 멀티스테이지 전부)의 `COPY`/`ADD` 인자로 **컨테이너 어느 스테이지든 들어가는 파일·디렉터리 집합**을 구한다. `COPY --from=<stage>` 로 이전 스테이지 산출물(빌드 결과)을 가져오는 경로도 포함한다.
+   ```bash
+   grep -niE '^\s*(COPY|ADD)' Dockerfile 2>/dev/null
+   ```
+   (예 scm-monitoring: builder `COPY inventory-monitoring/ .` → `inventory-monitoring/**`, runner `COPY --from=builder /app/build` → 빌드 산출물.)
+2. **각 env 의 참조 파일을 본다.** 그 env 이름을 참조하는 소스 파일(코드/`.env`)이 위 COPY 집합 **안**이면 → **`container`**. `CMD`/`ENTRYPOINT` 가 실행하는 코드가 읽으면 런타임, 빌드 단계(`RUN ... build`)에서 인라인되면 빌드타임 — **어느 쪽이든 `scope=container`**.
+3. **컨테이너 밖 파일만 참조하면 → `local`.** 그 env 가 **COPY 집합에 없는 파일**(예 `scripts/fgdw/*.cjs`·`refresh.ps1`)에서만 참조되고, 컨테이너 안 파일 어디서도 안 쓰이면 → **`local`**.
+4. **불확실하면 `container`(보수적).** COPY 범위 산출이 모호하거나(와일드카드·복잡한 멀티스테이지), 같은 env 가 컨테이너 안/밖 양쪽에서 참조되면 → **`container` 유지**.
+
+### 보수적 편향 (안전 핵심 — 불변식)
+- **오분류 비대칭:** 런타임/빌드 env 를 `local` 로 오판 → deploy 가 값을 안 넣어 **앱이 설정값 없이 크래시**(비개발자는 원인도 못 찾음) = **치명**. 로컬 env 를 `container` 로 오판 → deploy 가 불필요 질문 1번 = **경미**.
+- **→ 불확실하면 무조건 `container` 유지.** `scope:"local"` 은 **Dockerfile 상 컨테이너 밖임이 확실할 때만** 부여한다.
+- **`VITE_*`/`NEXT_PUBLIC_*` 는 빌드타임 → 항상 `container`(local 금지).** 정적 빌드(Vite→nginx)라도 이 값들은 빌드 단계(`RUN npm run build`)에서 번들에 인라인되므로 컨테이너 안이다. `local` 로 빼면 build-arg 가 안 들어가 빌드가 깨지거나 `undefined` 로 인라인된다. (Vite 의 빌드타임 내장값 `import.meta.env.BASE_URL` 등도 마찬가지로 `container`.)
+
+### scm-monitoring 적용 예 (검증된 결과 — 규칙을 손으로 따라간 결과)
+Dockerfile: builder `COPY inventory-monitoring/ .`(+ runner `COPY --from=builder /app/build`). → **COPY 집합 = `inventory-monitoring/**`(+ 빌드 산출물 `build/`).** `scripts/fgdw/*.cjs`·`scripts/supabase/*.cjs`·`refresh.ps1` 은 **집합 밖.**
+
+| env | 참조 파일 | 판정 |
+|---|---|---|
+| `BASE_URL` | `inventory-monitoring/**`(`import.meta.env.BASE_URL`, Vite 빌드타임 내장값) | **`container`**(class=build — local 금지) |
+| `TABLEAU_SERVER`·`TABLEAU_USER`·`TABLEAU_PW` | `scripts/fgdw/extract-tableau-supply-plan.cjs` 등 ETL 만 | **`local`** |
+| `SOC_SHEET_ID`·`CUSTOMER_IMPACT_SHEET_ID` | `scripts/fgdw/parse-*.cjs` ETL 만 | **`local`** |
+| `MSSQL_SERVER/PORT/DATABASE/USER/PASSWORD` | `scripts/fgdw/conn.cjs` ETL 만 | **`local`** |
+| `SUPABASE_DB_URL` | `scripts/supabase/*.cjs` ETL 만(컨테이너 안 코드는 미참조) | **`local`** |
+| `BRANDS`(env)·`FULL`·`LOOKBACK_MONTHS` | `scripts/**` ETL 파라미터만(`.tsx` 의 `BRANDS` 는 코드 내 const 배열이지 env 가 아님) | **`local`** |
+
+> ⚠️ **`BRANDS` 주의:** `inventory-monitoring/**` 의 `.tsx` 에 `const BRANDS = [...]` 가 보이지만 이는 **코드 안의 배열 리터럴**이지 `import.meta.env.BRANDS` 가 아니다(=env 참조 아님). env `BRANDS` 는 `scripts/supabase/migrate-item-history.cjs` 의 `process.env.BRANDS` 만 → `local`. 코드의 동명 식별자에 속지 말고 **env 참조(`process.env.X`/`import.meta.env.X`)인지** 본다.
+
+**기대 효과:** scm-monitoring 재검토 시 ETL 전용 env 가 `scope:"local"` 로 분류 → deploy 가 TABLEAU/SHEET/MSSQL/SUPABASE 를 **묻지 않고** nginx 정적 앱을 바로 배포(현재는 강제 질문). `BASE_URL` 은 `container` 로 남아 빌드 정상.
