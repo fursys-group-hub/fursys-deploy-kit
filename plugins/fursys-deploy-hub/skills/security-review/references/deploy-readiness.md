@@ -49,6 +49,13 @@ Dockerfile 이 **있어도** 내용 때문에 배포 빌드가 깨지는 두 유
 - **빌드 단계 `NODE_ENV=production` →** `devDependencies`(tailwind·typescript 등) 스킵으로 `npm run build` 실패. `ENV NODE_ENV=production` 은 runner 에만.
 - **`NEXT_PUBLIC_*`/`VITE_*` 빌드 인자 미선언 →** `ARG` 없으면 build-arg 가 무시되어 `undefined` 로 번들에 인라인(빌드는 통과, 런타임 깨짐). 코드가 쓰는 공개 변수마다 builder 에 `ARG`+`ENV` 필요.
 - **non-root + 볼륨 경로 미준비 →** 앱이 `USER`(non-root)로 돌고 영속 볼륨(`services.json` 의 `volumes`, 예 `/data`)을 쓰는데, Dockerfile 이 `USER` 전에 그 경로를 `mkdir -p` + `chown` 하지 않으면, 볼륨이 **root 소유**로 마운트돼 컨테이너 사용자가 못 써 **배포 후 권한 에러로 크래시**(예: `PermissionError: '/data'`). 볼륨 경로가 있으면 Dockerfile 에 `RUN mkdir -p <경로> && chown <user> <경로>` 가 `USER` **앞**에 있는지 확인 → 없으면 **높음**. (빈 볼륨 첫 마운트 시 이미지의 그 경로 소유권이 복사되므로 이렇게 하면 해결.)
+- **`public/` COPY 대상 없음(ERR-01, Next.js standalone) →** runner 가 `COPY --from=builder /app/public ./public` 을 하는데, 프로젝트 루트에 `public/` 디렉터리가 없고 builder 에 `RUN mkdir -p /app/public` 도 없으면, **빌드(`npm run build`)는 성공한 뒤 runner COPY 단계에서 `"/app/public": not found`(exit 1)** 로 깨진다(빌드 미실행 검토로는 놓치기 쉬운 정적-미탐 유형. OOM 의 137 과 구분 — 이건 메모리가 아니라 **경로** 문제). 점검:
+  ```bash
+  grep -qiE '^COPY .*[/ ]public( |$)|/app/public' Dockerfile && {   # Dockerfile 이 public 을 복사하나
+    test -d public || grep -qE 'RUN +mkdir +-p +/app/public' Dockerfile || echo "WARN: public COPY 대상 없음(public/ 폴더도 mkdir 도 없음) → runner COPY 실패 위험"
+  }
+  ```
+  → 둘 다 없으면 **높음**. 사전 차단: 빈 `public/.gitkeep` 추가(권장) **또는** builder 에 `RUN mkdir -p /app/public`(COPY 앞 — `framework-rules.md` Next.js ②-2 정준 골격엔 이미 포함). 화면 문구: "도커 설정이 `public` 폴더를 복사하는데 그 폴더가 없어 **빌드가 멈춰요.** 빈 `public` 폴더만 만들어 두면 됩니다." (이 항목은 빌드를 깨는 정적 유형이라 **높음** — 배포 전에 잡아야 빌드 실패·재시도를 피한다.)
 
 ---
 
