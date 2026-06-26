@@ -6,7 +6,7 @@
 //   last-verdict   : { commit, env_plan:[{name,class,note}], ... }
 //
 // 모드 B(빌드로그): plan-summary.mjs --logs <typeKey> "<핵심 에러 한 줄>" ["<인자: 모듈/경로 등>"]
-//   typeKey ∈ dep-missing|dep-devdep|lockfile|build-error|port|start-cmd|dockerfile|env-missing|unknown
+//   typeKey ∈ dep-missing|dep-devdep|lockfile|build-error|port|start-cmd|dockerfile|oom|copy-public|env-missing|unknown
 //   (deploy-failure-playbook.md 유형) — 빌드 실패는 엔진 finding 이 아니라 로그가 정본.
 //
 // 출력(stdout): 비개발자용 한글 고정 형식. 자동수정 대상 / 사람 판단 필요(안내만) 분리.
@@ -29,6 +29,8 @@ if (process.argv[2] === "--logs") {
     "port":         { auto: true,  ko: "앱이 실제로 쓰는 접속 통로(포트)와 설정의 번호가 달라요." },
     "start-cmd":    { auto: true,  ko: "앱을 켜는 명령에 문제가 있어 시작하자마자 멈췄어요." },
     "dockerfile":   { auto: true,  ko: "앱을 만드는 설명서(Dockerfile)의 한 단계에서 막혔어요." },
+    "oom":          { auto: true,  ko: "앱을 만드는 컴퓨터의 메모리가 잠깐 부족해서 멈췄어요(코드 문제가 아니에요)." },
+    "copy-public":  { auto: true,  ko: "앱을 담는 설명서가 'public' 폴더를 찾지 못해 멈췄어요(빈 폴더 하나만 만들면 돼요)." },
     "env-missing":  { auto: false, ko: "앱이 켜질 때 꼭 필요한 설정값이 없어요(사람이 정하거나 외부에서 받아야 하는 값일 수 있어요)." },
     "unknown":      { auto: false, ko: "로그만으로는 원인을 정확히 짚기 어려워요(핵심 에러 줄을 보고 사람이 확인해야 해요)." },
   };

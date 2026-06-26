@@ -60,6 +60,7 @@
 
 #### ②-2. 정준(canonical) standalone Dockerfile 골격 (생성·수정 기준)
 > **단일 출처 동기화:** 이 골격은 `create-app` 의 `templates/web-next/Dockerfile`(새 프로젝트 생성 시 출하하는 실제 표준)과 **동일하게 유지**한다. 한쪽을 고치면 다른 쪽도 맞춘다(드리프트 금지). base 이미지는 사내 표준 `node:20-alpine`.
+> **TODO(create-app 동기화 — 별도 작업):** 아래 builder 의 `RUN mkdir -p /app/public`(ERR-01 예방)은 아직 이 골격에만 반영됐다. `create-app` 의 `templates/web-next/Dockerfile`(외부 패키지)에도 같은 줄과 `public/.gitkeep` 기본 출하를 반영해야 드리프트가 닫힌다(Wave 1 범위 밖).
 
 Dockerfile 을 새로 만들거나 고칠 때 이 골격을 기준으로 한다(②-1 두 함정을 모두 회피한 형태). `NEXT_PUBLIC_*` ARG 줄은 코드가 실제로 쓰는 변수로 채운다(안 쓰면 생략).
 ```dockerfile
@@ -83,6 +84,7 @@ ENV NEXT_TELEMETRY_DISABLED=1
 #   ARG NEXT_PUBLIC_API_BASE_URL
 #   ENV NEXT_PUBLIC_API_BASE_URL=$NEXT_PUBLIC_API_BASE_URL
 RUN npm run build                # 여기에 ENV NODE_ENV=production 절대 금지
+RUN mkdir -p /app/public         # public 폴더가 없어도 runner COPY 가 실패하지 않게 보장(ERR-01 예방)
 
 # Stage 3: runner
 FROM node:20-alpine AS runner
@@ -101,7 +103,7 @@ EXPOSE 3000
 CMD ["node", "server.js"]
 ```
 - 전제: `next.config.*` 에 `output: 'standalone'`. 없으면 `.next/standalone/server.js` 가 안 생겨 runner `COPY` 가 실패한다.
-- `public/` 폴더가 없는 프로젝트면 해당 `COPY` 줄은 뺀다.
+- 빌더에서 빈 public 보장(위 `RUN mkdir -p /app/public`)으로 `public/` 폴더가 없는 프로젝트여도 runner `COPY` 줄을 그대로 둬도 안전하다. (COPY 줄을 빼는 우회는 더 이상 권장하지 않는다.)
 
 ---
 

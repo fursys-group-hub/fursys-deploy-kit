@@ -128,7 +128,7 @@ node "$CLAUDE_PLUGIN_ROOT/skills/deploy-fix/scripts/plan-summary.mjs" .fursys-de
 ```bash
 node "$CLAUDE_PLUGIN_ROOT/skills/deploy-fix/scripts/plan-summary.mjs" --logs <유형키> "<핵심 에러 한 줄>" ["<모듈/경로 등 인자>"]
 ```
-- `<유형키>` 는 playbook 유형: `dep-missing`·`dep-devdep`·`lockfile`·`build-error`·`port`·`start-cmd`·`dockerfile`·`env-missing`·`unknown` 중 하나.
+- `<유형키>` 는 playbook 유형: `dep-missing`·`dep-devdep`·`lockfile`·`build-error`·`port`·`start-cmd`·`dockerfile`·`oom`·`copy-public`·`env-missing`·`unknown` 중 하나.
 - 스크립트가 **자동수정 대상인지 / 사람 판단 필요(안내만)인지**를 쉬운 우리말 고정 형식으로 출력한다(시크릿 값 미포함). 그 출력을 그대로 사용자에게 보여준다 — 문구를 즉석에서 새로 짓지 않는다.
 - **자동수정 제외(안내만):** `env-missing`(필수 설정값 누락) 중 사람만 아는 값·외부 자격증명, `note:"ask"` 항목, `inGitHistory` 시크릿, 아키텍처 변경이 필요한 경우. 이때는 "값을 알려주세요 / IT본부에 문의"로만 안내하고 자동수정·재폴링하지 않는다.
 
@@ -138,7 +138,9 @@ node "$CLAUDE_PLUGIN_ROOT/skills/deploy-fix/scripts/plan-summary.mjs" --logs <�
    ```bash
    git stash push -u -m "deploy-fix-snapshot $(date '+%Y%m%d-%H%M')" >/dev/null 2>&1 && git stash apply >/dev/null 2>&1 || true
    ```
-3. **playbook 진단대로 코드 Edit.** 한 가지씩 고치고, **어떤 파일의 무엇을 고쳤는지** 쉬운 말로 통보한다(시크릿 미출력).
+3. **playbook 진단대로 코드 Edit.** 한 가지씩 고치고, **어떤 파일의 무엇을 고쳤는지** 쉬운 말로 통보한다(시크릿 미출력). 유형별 구체 수정은 아래와 같다(확인 후에만 적용):
+   - **`oom`(빌드 메모리 부족) → `next.config` 수정:** 프로젝트 루트의 `next.config.mjs`/`next.config.js`/`next.config.ts` 중 존재하는 것에서, 최상위 config 객체에 `experimental: { cpus: 1, workerThreads: false }` 를 **병합**한다(이미 `experimental` 가 있으면 그 안에 `cpus`·`workerThreads` 만 추가/덮어쓰고 다른 키는 보존). `output: 'standalone'` 등 기존 키는 **건드리지 않는다.** **`NODE_OPTIONS=--max-old-space-size` 상향은 넣지 않는다**(해법 아님 — 오히려 메모리를 더 키운다). 통보: "앱을 만드는 부담을 줄이는 설정을 `next.config` 에 넣었어요. 메모리 부족으로 멈추던 문제예요." `output: 'standalone'` 제거(최후수단)는 이미지 구조를 바꾸는 아키텍처 변경이라 **자동수정에서 제외** — ⑪에서 안내만 한다.
+   - **`copy-public`(public 폴더 없음) → `public/.gitkeep` 생성:** 프로젝트 루트에 `public/` 디렉터리를 만들고 빈 `public/.gitkeep` 파일을 작성한다. **Dockerfile 은 고치지 않는다.** 통보: "비어 있던 'public' 폴더를 만들어 뒀어요. 이제 마지막 복사 단계가 통과해요."
 4. **git push 로 재배포**한다(=Coolify webhook 자동 재배포). **`/deploy` 재실행(재-POST) 금지 — 이중배포 가드 불변.** 같은 앱에 다시 올라간다.
    ```bash
    git add -A && git commit -m "fix: 빌드 실패 자동 수정 (deploy-fix)" && git push

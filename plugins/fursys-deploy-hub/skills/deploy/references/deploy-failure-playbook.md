@@ -78,6 +78,35 @@
   ```
   - 이 경우 사용자에게는: "이 앱이 '○○' 값을 필요로 해요. 값이 있으면 알려주시고, 모르면 IT본부에 문의하세요." 라고 덧붙인다.
 
+## 8) 빌드 메모리 부족(만드는 중 멈춤)
+- **로그 신호**: **exit code 137**(=128+9, 강제 종료) + 직전 줄이 `Collecting build traces`(또는 `Finalizing page optimization` 직후 중단) + **명시적 에러 메시지 없음**. Coolify 측 `Command execution failed (exit code 137)`. (※ 137 + 메시지 없음 = 메모리 부족 전형. 코드 에러면 exit 1 + 메시지가 남는다 → 3)번 `build-error` 와 구분.)
+- **쉬운 설명**: "앱을 만드는 컴퓨터의 메모리가 잠깐 부족해서 멈췄어요. (코드 문제가 아니에요.) 만드는 부담을 줄이는 설정을 넣으면 돼요."
+- **복붙 수정 프롬프트**:
+  ```
+  배포 빌드가 'Collecting build traces' 단계에서 메모리 부족(exit 137)으로 멈췄어. next.config(.mjs/.js/.ts)에 experimental: { cpus: 1, workerThreads: false } 를 추가해 빌드 trace 수집의 메모리 피크를 낮춰줘. (NODE_OPTIONS=--max-old-space-size 상향은 해법이 아니니 쓰지 마.)
+  ```
+- **금지(반드시)**: `NODE_OPTIONS=--max-old-space-size` 상향을 자동수정으로 넣지 않는다. 137 은 cgroup 메모리(RSS) 초과이고 trace 수집 메모리는 네이티브 비중이 커서 V8 힙 상한으로 안 잡힌다 — 오히려 메모리를 더 키운다.
+- **폴백(자동수정이 안 통하면, 안내만)**:
+  - **IT본부에 빌드 메모리/swap 상향 요청**(인프라 — 코드 밖, 근본 해결): "IT본부에 '배포 빌드 메모리를 조금 늘려달라'고 요청해 주세요."
+  - **최후수단**: `next.config` 에서 `output: 'standalone'` 제거(+ Dockerfile runner 를 전체 `node_modules`+`.next`+`next start` 로 변경 — 이미지 커짐). **자동수정 대상이 아니라 안내만**(아키텍처 변경, 사람 판단).
+- **예방**: 정준 standalone 골격은 그대로 두되, 빌드 메모리가 빠듯한 호스트면 위 `experimental: { cpus: 1, workerThreads: false }` 를 처음부터 두면 trace 수집 피크가 낮아진다.
+
+## 9) public 폴더가 없어 마지막 복사 단계 실패
+- **로그 신호**: 빌드(`npm run build`)는 **성공**(`#NN DONE`) 후, **runner 스테이지 COPY 단계에서 exit 1** + `"/app/public": not found`(또는 `failed to calculate checksum of ref ... "/app/public": not found` / `failed to compute cache key`). exit code **1**(8)번 메모리 부족의 137 과 구분 — 메모리가 아니라 경로 문제).
+- **쉬운 설명**: "앱을 담는 설명서가 'public' 이라는 폴더를 복사하려는데 그 폴더가 없어서 멈췄어요. 빈 폴더 하나만 만들어 두면 돼요."
+- **복붙 수정 프롬프트**:
+  ```
+  배포 빌드의 마지막 단계에서 public 폴더가 없어 COPY 가 실패했어(/app/public not found, exit 1). 프로젝트 루트에 public/ 폴더를 만들고 빈 public/.gitkeep 파일을 추가한 뒤 커밋해줘. (Dockerfile 은 그대로 둔다.)
+  ```
+- **예방**: 새 프로젝트는 처음부터 `public/.gitkeep` 을 두거나, 정준 Dockerfile builder 스테이지에 `RUN mkdir -p /app/public` 을 포함하면 이 오류가 원천 차단된다.
+
+---
+
+## 참고로만 — 빌드는 통과했는데 켜진 뒤 문제 (1줄씩)
+> 아래는 빌드 실패가 아니라 **빌드·기동은 성공한 뒤** 생기는 증상이라 위 1~9 유형과 진단 경로가 다르다. 인식용으로만 둔다.
+- **설정값에 따옴표가 따라 들어감**: 빌드·기동은 성공했는데 로그인 등 API 가 500 + `the URL must start with postgresql://`/값이 `"` 로 시작 → 설정값이 따옴표째 들어갔어요. Coolify 설정값에서 앞뒤 `"`/`'` 제거 후 재배포. (deploy 가 `.env` 값을 보낼 때 앞뒤 따옴표를 자동으로 떼므로 이후 새 배포에선 안 생긴다.)
+- **비밀값이 빌드 단계에 노출(경고)**: 빌드 경고 `SecretsUsedInArgOrEnv: ARG "<비밀>"` → 런타임 전용 비밀이 빌드타임에 노출. 그 값을 Coolify 'Runtime only' 로 옮긴다.
+
 ---
 
 ## 진단이 애매할 때
