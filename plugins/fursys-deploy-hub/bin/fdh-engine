@@ -327,10 +327,58 @@ var PLACEHOLDER = [
   /your[_-]?api[_-]?key/i,
   /xxx+/i,
   /changeme/i,
-  /example/i
+  /example/i,
+  // Generic "your_*" / "my_*" prefixes (broader than your_api_key above).
+  /\byour[_-]/i,
+  // Bracket / template-variable placeholder syntax: <...>, ${...}, {{...}}.
+  /<[^>]+>/,
+  /\$\{[^}]+\}/,
+  /\{\{[^}]+\}\}/
 ];
+var PLACEHOLDER_TOKEN = [
+  // English fill-ins
+  /^user(name)?$/i,
+  /^pass(word|wd)?$/i,
+  /^pwd$/i,
+  /^host(name)?$/i,
+  /^db_?host$/i,
+  /^secret$/i,
+  /^token$/i,
+  /^replace[_-]?me$/i,
+  /^to[_-]?be[_-]?(set|filled|replaced)$/i,
+  // Korean fill-ins (자리표시자)
+  /^사용자$/,
+  /^비밀번호$/,
+  /^비번$/,
+  /^암호$/,
+  /^호스트$/,
+  /^계정$/,
+  /^서버주소$/,
+  /^포트$/
+];
+var KOREAN_PLACEHOLDER_SUBSTR = [
+  /여기에/,
+  /비밀번호/,
+  /사용자/,
+  /호스트/,
+  /서버주소/
+];
+function isPlaceholderComponent(component) {
+  const c = component.trim();
+  if (PLACEHOLDER_TOKEN.some((p) => p.test(c))) return true;
+  if (KOREAN_PLACEHOLDER_SUBSTR.some((p) => p.test(c))) return true;
+  return false;
+}
+var CONN_CREDS = /:\/\/([^:/@\s]+):([^@/\s]+)@/;
 function looksLikePlaceholder(value) {
-  return PLACEHOLDER.some((p) => p.test(value));
+  if (PLACEHOLDER.some((p) => p.test(value))) return true;
+  if (KOREAN_PLACEHOLDER_SUBSTR.some((p) => p.test(value))) return true;
+  const creds = CONN_CREDS.exec(value);
+  if (creds) {
+    const [, user, pass] = creds;
+    if (isPlaceholderComponent(pass) || isPlaceholderComponent(user)) return true;
+  }
+  return false;
 }
 var FP_PATH = [
   /(^|\/)__tests__\//,
