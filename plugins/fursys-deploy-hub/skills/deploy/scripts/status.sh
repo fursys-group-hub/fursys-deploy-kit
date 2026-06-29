@@ -39,10 +39,6 @@ if [ -z "$APP_ID" ]; then
 fi
 
 fdh_resolve_url || true
-if ! fdh_load_key; then
-  echo "NO_KEY"
-  exit 0
-fi
 
 # 한 필드의 문자열 값을 JSON 에서 뽑는다(첫 매치). 없으면 빈 문자열(grep 미스로 스크립트가 죽지 않게 || true).
 # 값 자체는 화면에 안 찍는다(변수만).
@@ -50,7 +46,7 @@ json_str() { printf '%s' "$1" | { grep -oE "\"$2\"[[:space:]]*:[[:space:]]*\"[^\
 
 # ── 1) /status 먼저 (호출 비용 절감: *running* 이면 /logs 생략) ───────────────────
 SRESP="$(curl -sS -w $'\n%{http_code}' "$PROXY_URL/apps/$APP_ID/status" \
-  -H "X-Proxy-Key: $KEY" 2>/dev/null || true)"
+  2>/dev/null || true)"
 SHTTP="$(printf '%s' "$SRESP" | tail -n1)"
 SJSON="$(printf '%s' "$SRESP" | sed '$d')"
 STATUS=""
@@ -86,7 +82,7 @@ esac
 
 # ── 2) running 아님 → /logs 의 deployment status 로 진행/실패를 가린다 ───────────
 LRESP="$(curl -sS -w $'\n%{http_code}' "$PROXY_URL/apps/$APP_ID/logs" \
-  -H "X-Proxy-Key: $KEY" 2>/dev/null || true)"
+  2>/dev/null || true)"
 LHTTP="$(printf '%s' "$LRESP" | tail -n1)"
 LJSON="$(printf '%s' "$LRESP" | sed '$d')"
 DSTATUS=""

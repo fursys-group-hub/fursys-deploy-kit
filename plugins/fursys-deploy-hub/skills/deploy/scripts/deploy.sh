@@ -1,14 +1,14 @@
 #!/usr/bin/env bash
 # 최초 앱 생성 + 첫 배포: POST /apps → 결과 코드 반환(POST 중심, 장시간 폴링 없음).
 # 종결 대기(기동/실패 판정)는 호출측(deploy 스킬 ⑦)이 status.sh 를 backoff 로 반복 호출해 한다(CONTRACTS §11.2).
-# 결정적 plumbing. 비밀값(키)은 인자/표준입력으로 받고 echo 하지 않는다.
+# 결정적 plumbing. 무인증(배포 키 제거) — 인증 헤더 없이 전송한다.
 #
 # 사용:
 #   deploy.sh <repo> <commit> <team> <subdomain> [port] [env_json] [옵션 플래그]
 #     repo      : fursys-group-hub/<name>
 #     commit    : git rev-parse HEAD 값
-#     team      : creatable_teams 중 하나 (예: iloom-hub)
-#     subdomain : 접속 주소 앞부분 (예: event)
+#     team      : (호환용 위치 인자 — 단일팀 전환으로 서버가 무시하고 group-hub 로 고정한다. 빈 값 가능)
+#     subdomain : 접속 주소 앞부분 (예: event) → 최종 {subdomain}.group.hub.fursys.com
 #     port      : (선택) 앱이 듣는 포트. Dockerfile EXPOSE 값. 비우면 3000.
 #                 next=3000 / vite(nginx)=8080 / fastapi=8000 등. 틀리면 502(라우팅 불일치)가 난다.
 #     env_json  : (선택) env_vars 배열 JSON. 예) '[{"key":"GREETING","value":"hi","class":"runtime"}]'
@@ -33,13 +33,10 @@
 #     REDEPLOYED <app_id> <domain>       고아 자가복구로 새로 만듦(200 redeployed:true, deploy_triggered:true)
 #                                        — CREATED 와 동일하게 호출측이 status.sh 로 종결 폴링
 #     (종결 판정 RUNNING/LIVE_OK/LIVE_PENDING/FAILED/BUILDING/UNKNOWN 은 이제 status.sh 가 낸다 — 이 스크립트는 안 낸다.)
-#     NAME_TAKEN                     409 error=name_taken → 그 이름(app_id)이 타인 소유(남의 앱 재배포 금지)
-#     ALREADY_EXISTS                 409, error 없음/그 외 → 하위호환 잔존(정상 재시도엔 더 이상 안 옴)
 #     PLACEHOLDER_UNRESOLVED         본문에 치환 안 된 ${...} 가 남아 전송 중단(빌드 깨짐 사전 차단)
 #     GATE_NO_VERDICT                409 error=no_verdict (서버 게이트 차단)
 #     GATE_BLOCKED                   409 error=verdict_blocked (서버 게이트 차단)
-#     UNAUTHORIZED                   401
-#     FORBIDDEN                      403
+#     BAD_REQUEST                    400 (repo/subdomain 누락 등)
 #     PROXY_ERROR <http_code>        502 등 기타 오류
 #   부가정보로 응답 본문(warnings 포함)을 함께 출력하므로, 호출 측이 warnings 를 읽어 안내한다.
 set -uo pipefail
@@ -86,10 +83,6 @@ if [ ! -t 0 ]; then
 fi
 
 fdh_resolve_url || true
-if ! fdh_load_key; then
-  echo "NO_KEY"
-  exit 0
-fi
 
 # 요청 본문 구성.
 # 항상 들어가는 필드 + 선택 필드(멀티서비스/ env_vars)를 조립한다.
@@ -116,7 +109,7 @@ case "$BODY" in
 esac
 
 RESP="$(curl -sS -w $'\n%{http_code}' -X POST "$PROXY_URL/apps" \
-  -H "X-Proxy-Key: $KEY" -H "Content-Type: application/json" \
+  -H "Content-Type: application/json" \
   -d "$BODY" 2>/dev/null || true)"
 HTTP="$(printf '%s' "$RESP" | tail -n1)"
 JSON="$(printf '%s' "$RESP" | sed '$d')"
@@ -149,15 +142,13 @@ case "$HTTP" in
     # (CREATED/REDEPLOYED 를 받은 서비스는 "이미 만들어진 것" — 다시 POST 하지 않는다).
     exit 0
     ;;
-  401) echo "UNAUTHORIZED" ;;
-  403) echo "FORBIDDEN" ;;
+  400) echo "BAD_REQUEST"; printf '%s\n' "$JSON" ;;
   409)
     ERR="$(extract error)"
     case "$ERR" in
       no_verdict) echo "GATE_NO_VERDICT" ;;
       verdict_blocked) echo "GATE_BLOCKED" ;;
-      name_taken) echo "NAME_TAKEN" ;;
-      *) echo "ALREADY_EXISTS" ;;   # 하위호환 잔존(정상 재시도엔 더 이상 안 옴)
+      *) echo "PROXY_ERROR 409" ;;
     esac
     printf '%s\n' "$JSON"
     ;;

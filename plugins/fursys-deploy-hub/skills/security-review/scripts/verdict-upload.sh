@@ -15,10 +15,10 @@
 # 출력(stdout): 첫 줄 결과 코드.
 #   STORED             200 {"stored":true} → 등록 성공 (report_url 없음 → 로컬 HTML 폴백 안내)
 #   STORED <url>       200 + report_url 동봉 → 등록 성공 + 추측 불가 토큰 리포트 URL(우선 안내)
-#   NO_KEY             키 없음 → 등록 건너뜀(검사 자체는 멈추지 않음)
 #   NO_COMMIT          commit 인자 없음 → 등록 생략(게이트가 commit 단위)
-#   UNAUTHORIZED       401 invalid_key
+#   BAD_BODY <사유>    본문 필수값 누락/형식오류(서버 왕복 전 로컬 차단)
 #   UPLOAD_FAILED <c>  기타/네트워크 실패 → 배포 때 재시도
+# 무인증(배포 키 제거) — 인증 헤더 없이 등록한다.
 set -uo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -92,12 +92,8 @@ fi
 BODY="$(fdh_to_ascii "$BODY")"
 
 fdh_resolve_url || true
-if ! fdh_load_key; then
-  echo "NO_KEY"
-  exit 0
-fi
 
-# 사전검증(서버 게이트와 동일): 실패하면 보내지 않고 정확한 사유를 알린다(서버 왕복·401 오진단 방지).
+# 사전검증(서버 게이트와 동일): 실패하면 보내지 않고 정확한 사유를 알린다(서버 왕복 방지).
 if ! REASON="$(_fdh_validate_body "$BODY")"; then
   echo "BAD_BODY ${REASON}"
   exit 0
@@ -109,7 +105,7 @@ fi
 RESP="$(printf '%s' "$BODY" | curl -sS -w $'\n%{http_code}' \
   --connect-timeout 10 --max-time 30 \
   -X POST "$PROXY_URL/verdict" \
-  -H "X-Proxy-Key: $KEY" -H "Content-Type: application/json" \
+  -H "Content-Type: application/json" \
   --data-binary @- 2>/dev/null || true)"
 HTTP="$(printf '%s' "$RESP" | tail -n1)"
 RESP_BODY="$(printf '%s' "$RESP" | sed '$d')"
@@ -130,10 +126,9 @@ case "$HTTP" in
       echo "STORED"
     fi
     ;;
-  401) echo "UNAUTHORIZED" ;;
   *)
     echo "UPLOAD_FAILED $HTTP"
-    # 응답 본문(원인 detail)도 출력 — 서버 500 등의 진짜 원인 진단용(키/시크릿 미포함).
+    # 응답 본문(원인 detail)도 출력 — 서버 500 등의 진짜 원인 진단용(시크릿 미포함).
     printf '%s\n' "$RESP_BODY"
     ;;
 esac

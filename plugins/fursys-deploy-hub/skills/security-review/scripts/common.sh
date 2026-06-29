@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# 공통 헬퍼 — 개인 배포 키 읽기 + 전송 대상 URL 가드 (security-review 스킬용).
-# verdict-upload.sh 가 `source` 한다. 비밀값(키)은 절대 echo 하지 않는다.
+# 공통 헬퍼 — 전송 대상 URL 가드 (security-review 스킬용).
+# verdict-upload.sh 가 `source` 한다. 무인증(배포 키 제거) — 더 이상 키를 읽지 않는다.
 set -euo pipefail
 
 # 스크립트 자기 위치 기준 절대경로(T4 폴백의 단일 출처).
@@ -16,19 +16,6 @@ export FDH_SCRIPT_DIR FDH_PLUGIN_ROOT
 
 # 같은 security-review scripts/ 폴더의 다른 스크립트 절대경로를 돌려준다.
 fdh_script() { printf '%s/%s' "$FDH_SCRIPT_DIR" "$1"; }
-
-# 개인 배포 키 → 전역 KEY. (출력 금지) 없으면 KEY="" + stdout 에 NO_KEY.
-fdh_load_key() {
-  KEY="${FURSYS_PROXY_KEY:-}"
-  if [ -z "$KEY" ] && [ -f "$HOME/.fursys/proxy-key" ]; then
-    KEY="$(cat "$HOME/.fursys/proxy-key" 2>/dev/null || true)"
-  fi
-  if [ -z "$KEY" ]; then
-    echo NO_KEY
-    return 1
-  fi
-  return 0
-}
 
 # 전송 대상 URL → 전역 PROXY_URL. *.hub.fursys.com 외 override 는 무시(EXTERNAL_BLOCKED).
 fdh_resolve_url() {
