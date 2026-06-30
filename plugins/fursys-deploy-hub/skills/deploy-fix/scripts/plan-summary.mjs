@@ -76,6 +76,8 @@ catch (e) { console.log("PLAN_ERROR verdict_read: " + e.message); process.exit(1
 const SEV_KO = { critical: "치명", high: "높음", medium: "중간", low: "낮음" };
 const findings = Array.isArray(eng.findings) ? eng.findings : [];
 const envPlan = Array.isArray(lv.env_plan) ? lv.env_plan : [];
+// (deployfix2) 배포준비 자동수정 목록 — security-review 가 last-verdict 에 적은 것.
+const deployFixes = Array.isArray(lv.deploy_fixes) ? lv.deploy_fixes : [];
 
 // 사람만 아는 값(자동수정 불가) 이름 집합 — note=="ask" 인 설정값.
 const askNames = new Set(envPlan.filter((e) => e && e.note === "ask").map((e) => e.name));
@@ -97,6 +99,15 @@ for (const f of findings) {
   const item = { sev, loc, type: f.rule || "-", message: f.message || "" };
   if (reasonManual) { item.reason = reasonManual; manual.push(item); }
   else auto.push(item);
+}
+// (deployfix2) 배포준비 문제(deploy_fixes) — aiPrompt 있으면 자동수정, 없으면 안내만.
+for (const d of deployFixes) {
+  if (!d || typeof d !== "object") continue;
+  const sev = SEV_KO[d.severity] || d.severity || "높음";
+  const loc = d.file || (d.type ? `(${d.type})` : "-");
+  const item = { sev, loc, type: d.type || "배포 준비", message: d.message || "" };
+  if (d.aiPrompt) auto.push(item);
+  else { item.reason = "no-prompt"; manual.push(item); }
 }
 // env_plan 의 note=="ask" 항목(코드 finding 과 별개로 사람이 정할 값)도 안내 목록에 추가.
 for (const e of envPlan) {

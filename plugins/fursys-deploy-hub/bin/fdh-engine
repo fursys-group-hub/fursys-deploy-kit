@@ -4,7 +4,7 @@
 import * as readline from "readline";
 
 // src/index.ts
-import * as path5 from "path";
+import * as path6 from "path";
 
 // src/scanner.ts
 import { execSync } from "child_process";
@@ -142,6 +142,18 @@ function scanFiles(rootDir) {
 
 // src/framework.ts
 import * as path2 from "path";
+
+// src/ai-prompt.ts
+function buildAiPrompt(f) {
+  if (f.severity !== "critical" && f.severity !== "high") return null;
+  const loc = f.file ? f.line != null ? `${f.file}:${f.line}` : f.file : "\uD574\uB2F9 \uD30C\uC77C";
+  if (f.inGitHistory) {
+    return `${loc}\uC5D0\uC11C \uBC1C\uACAC\uB41C "${f.rule}" \uC2DC\uD06C\uB9BF\uC744 \uC989\uC2DC \uD3D0\uAE30\xB7\uC7AC\uBC1C\uAE09\uD558\uACE0, \uCF54\uB4DC\uC5D0\uC11C \uC81C\uAC70\uD55C \uB4A4 \uD658\uACBD\uBCC0\uC218\uB85C \uC62E\uAE30\uACE0 git \uC774\uB825\uC5D0\uC11C\uB3C4 \uC644\uC804\uD788 \uC81C\uAC70\uD574\uC918 (git filter-repo \uB4F1).`;
+  }
+  return `${loc}\uC758 \uD558\uB4DC\uCF54\uB529\uB41C "${f.rule}"\uC744(\uB97C) \uD658\uACBD\uBCC0\uC218\uB85C \uC62E\uAE30\uACE0, \uCF54\uB4DC\uC5D0\uC11C \uC81C\uAC70\uD55C \uB4A4 .gitignore\uC640 \uBC30\uD3EC \uD658\uACBD\uBCC0\uC218 \uC124\uC815\uC744 \uC810\uAC80\uD574\uC918.`;
+}
+
+// src/framework.ts
 function detectFramework(files) {
   const fileNames = new Set(files.map((f) => path2.basename(f.path)));
   const find = (base) => files.find((f) => path2.basename(f.path) === base);
@@ -168,54 +180,28 @@ ${pyProject?.content ?? ""}`;
   if (fileNames.has("manage.py") || /(^|\n)\s*django/i.test(pyText)) return "django";
   return "unknown";
 }
+var TELEMETRY_OFF_TOML = /gatherUsageStats\s*=\s*false/i;
+var TELEMETRY_OFF_ENV = /STREAMLIT_BROWSER_GATHER_USAGE_STATS\s*[:=]\s*["']?false/i;
+function scanStreamlitTelemetry(files) {
+  if (detectFramework(files) !== "streamlit") return [];
+  const disabled = files.some(
+    (f) => TELEMETRY_OFF_TOML.test(f.content) || TELEMETRY_OFF_ENV.test(f.content)
+  );
+  if (disabled) return [];
+  const configFile = files.find((f) => f.path === ".streamlit/config.toml")?.path ?? ".streamlit/config.toml";
+  const partial = {
+    severity: "medium",
+    rule: "Streamlit Telemetry Not Disabled",
+    file: configFile,
+    line: 1,
+    message: "Streamlit \uC0AC\uC6A9 \uD1B5\uACC4 \uC804\uC1A1\uC774 \uAEBC\uC838 \uC788\uC9C0 \uC54A\uC544\uC694(\uC0AC\uB0B4 \uC815\uCC45). .streamlit/config.toml \uC758 [browser] \uC139\uC158\uC5D0 gatherUsageStats = false \uB97C \uCD94\uAC00\uD558\uAC70\uB098 \uD658\uACBD\uBCC0\uC218 STREAMLIT_BROWSER_GATHER_USAGE_STATS=false \uB97C \uC124\uC815\uD558\uC138\uC694.",
+    inGitHistory: false
+  };
+  return [{ ...partial, aiPrompt: buildAiPrompt(partial) }];
+}
 
 // src/envvars.ts
 import * as path3 from "path";
-var BUILD_PREFIXES = ["NEXT_PUBLIC_", "VITE_", "REACT_APP_"];
-var LOCKED_PATTERNS = [
-  /SECRET/i,
-  /PASSWORD/i,
-  /PASSWD/i,
-  /TOKEN/i,
-  /_KEY$/i,
-  /API_?KEY/i,
-  /PRIVATE.*KEY/i,
-  /^DATABASE_URL$/i,
-  /^DB_URL$/i,
-  /^REDIS_URL$/i
-];
-function classifyEnvVar(name) {
-  if (BUILD_PREFIXES.some((p) => name.startsWith(p))) return "build";
-  if (LOCKED_PATTERNS.some((p) => p.test(name))) return "locked";
-  return "runtime";
-}
-function isEnvFile(p) {
-  return /^\.env(\.|$)/.test(path3.basename(p));
-}
-function extractEnvVars(files) {
-  const names = /* @__PURE__ */ new Set();
-  for (const file of files) {
-    if (isEnvFile(file.path)) {
-      for (const line of file.content.split("\n")) {
-        const trimmed = line.trim();
-        if (!trimmed || trimmed.startsWith("#")) continue;
-        const m = trimmed.match(/^([A-Z_][A-Z0-9_]*)\s*=/);
-        if (m) names.add(m[1]);
-      }
-      continue;
-    }
-    if (/\.(ts|tsx|js|jsx|mjs|cjs|py)$/.test(file.path)) {
-      for (const m of file.content.matchAll(/process\.env\.([A-Z_][A-Z0-9_]*)/g)) names.add(m[1]);
-      for (const m of file.content.matchAll(/import\.meta\.env\.([A-Z_][A-Z0-9_]*)/g)) names.add(m[1]);
-      for (const m of file.content.matchAll(
-        /os\.environ(?:\.get)?\s*\[?\s*['"]([A-Z_][A-Z0-9_]*)['"]/g
-      )) {
-        names.add(m[1]);
-      }
-    }
-  }
-  return [...names].sort().map((name) => ({ name, class: classifyEnvVar(name) }));
-}
 
 // src/secret-rules.ts
 var SECRET_RULES = [
@@ -380,6 +366,15 @@ function looksLikePlaceholder(value) {
   }
   return false;
 }
+var URL_CREDENTIAL = /^https?:\/\/[^/@\s]+:[^/@\s]+@/i;
+var URL_SECRET_QUERY = /[?&](?:access_token|token|api_?key|apikey|secret|password|passwd|pwd|key|client_secret)=/i;
+function looksLikePublicUrl(value) {
+  const v = value.trim();
+  if (!/^https?:\/\//i.test(v)) return false;
+  if (URL_CREDENTIAL.test(v)) return false;
+  if (URL_SECRET_QUERY.test(v)) return false;
+  return true;
+}
 var FP_PATH = [
   /(^|\/)__tests__\//,
   /(^|\/)tests?\//,
@@ -395,6 +390,16 @@ var FP_PATH = [
 ];
 function isFalsePositivePath(file) {
   return FP_PATH.some((p) => p.test(file));
+}
+var COMMENT_PREFIX = /(?:^|\s)(?:\/\/|#|\*|<!--|\/\*)/;
+var PEM_FN = /(?:from|to|parse|load|read|is|match|test|replace|import|export)pem/i;
+function isPemMarkerReference(line, marker) {
+  const idx = line.indexOf(marker);
+  if (idx < 0) return false;
+  const before = line.slice(0, idx);
+  if (COMMENT_PREFIX.test(before)) return true;
+  if (PEM_FN.test(line.replace(/[^a-z]/gi, ""))) return true;
+  return false;
 }
 function shannonEntropy(s) {
   if (s.length === 0) return 0;
@@ -440,15 +445,212 @@ function isLongOrHighEntropyValue(value) {
   if (value.length >= 8 && shannonEntropy(value) >= SEC15_MIN_ENTROPY) return true;
   return false;
 }
-
-// src/ai-prompt.ts
-function buildAiPrompt(f) {
-  if (f.severity !== "critical" && f.severity !== "high") return null;
-  const loc = f.file ? f.line != null ? `${f.file}:${f.line}` : f.file : "\uD574\uB2F9 \uD30C\uC77C";
-  if (f.inGitHistory) {
-    return `${loc}\uC5D0\uC11C \uBC1C\uACAC\uB41C "${f.rule}" \uC2DC\uD06C\uB9BF\uC744 \uC989\uC2DC \uD3D0\uAE30\xB7\uC7AC\uBC1C\uAE09\uD558\uACE0, \uCF54\uB4DC\uC5D0\uC11C \uC81C\uAC70\uD55C \uB4A4 \uD658\uACBD\uBCC0\uC218\uB85C \uC62E\uAE30\uACE0 git \uC774\uB825\uC5D0\uC11C\uB3C4 \uC644\uC804\uD788 \uC81C\uAC70\uD574\uC918 (git filter-repo \uB4F1).`;
+function isSecretEnvName(name) {
+  return SEC16_NAME_PATTERNS.some((p) => p.test(name));
+}
+var JS_ENV_FALLBACK = /process\.env(?:\.([A-Za-z_$][A-Za-z0-9_$]*)|\[\s*['"]([A-Za-z_$][A-Za-z0-9_$]*)['"]\s*\])\s*(?:\|\||\?\?)\s*['"]([^'"\n]+)['"]/g;
+var PY_ENV_FALLBACK = /(?:os\.environ\.get|os\.getenv|getenv)\s*\(\s*['"]([A-Za-z_][A-Za-z0-9_]*)['"]\s*,\s*['"]([^'"\n]+)['"]\s*\)/g;
+function findSecretFallbacks(line) {
+  const hits = [];
+  JS_ENV_FALLBACK.lastIndex = 0;
+  let m;
+  while ((m = JS_ENV_FALLBACK.exec(line)) !== null) {
+    const name = m[1] ?? m[2] ?? "";
+    const fallback = m[3] ?? "";
+    if (!isSecretEnvName(name)) continue;
+    if (looksLikePlaceholder(fallback)) continue;
+    hits.push({ name, fallback });
   }
-  return `${loc}\uC758 \uD558\uB4DC\uCF54\uB529\uB41C "${f.rule}"\uC744(\uB97C) \uD658\uACBD\uBCC0\uC218\uB85C \uC62E\uAE30\uACE0, \uCF54\uB4DC\uC5D0\uC11C \uC81C\uAC70\uD55C \uB4A4 .gitignore\uC640 \uBC30\uD3EC \uD658\uACBD\uBCC0\uC218 \uC124\uC815\uC744 \uC810\uAC80\uD574\uC918.`;
+  PY_ENV_FALLBACK.lastIndex = 0;
+  while ((m = PY_ENV_FALLBACK.exec(line)) !== null) {
+    const name = m[1] ?? "";
+    const fallback = m[2] ?? "";
+    if (!isSecretEnvName(name)) continue;
+    if (looksLikePlaceholder(fallback)) continue;
+    hits.push({ name, fallback });
+  }
+  return hits;
+}
+var ACCOUNT_NAME_PATTERNS = [
+  /^USER(_?NAME|_?ID)?$/i,
+  /^(DEFAULT|ADMIN|DB|APP|LOGIN|SVC|SERVICE)_?USER(NAME)?$/i,
+  /^ACCOUNT(_?NAME|_?ID)?$/i,
+  /^LOGIN(_?ID|_?NAME)?$/i
+];
+function isAccountVarName(name) {
+  return ACCOUNT_NAME_PATTERNS.some((p) => p.test(name));
+}
+var GENERIC_ACCOUNT = /* @__PURE__ */ new Set([
+  "admin",
+  "administrator",
+  "root",
+  "user",
+  "guest",
+  "test",
+  "demo",
+  "postgres",
+  "mysql",
+  "mssql",
+  "sa",
+  "oracle",
+  "system",
+  "service",
+  "app",
+  "api",
+  "default",
+  "anonymous",
+  "nobody",
+  "www-data",
+  "deploy"
+]);
+var EMAIL_RE = /^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$/;
+var PERSON_NAME_RE = /^[A-Za-z]{2,}[._][A-Za-z]{2,}([._][A-Za-z]{2,})?$/;
+function looksLikePersonalAccount(value) {
+  const v = value.trim();
+  if (looksLikePlaceholder(v)) return false;
+  if (GENERIC_ACCOUNT.has(v.toLowerCase())) return false;
+  if (EMAIL_RE.test(v)) return true;
+  if (PERSON_NAME_RE.test(v)) return true;
+  return false;
+}
+
+// src/envvars.ts
+var BUILD_PREFIXES = ["NEXT_PUBLIC_", "VITE_", "REACT_APP_"];
+var LOCKED_PATTERNS = [
+  /SECRET/i,
+  /PASSWORD/i,
+  /PASSWD/i,
+  /(^|_)PWD($|_)/i,
+  // DB_PWD / MYSQL_PWD / MAIL_PWD 등 — PWD 약어형 비밀번호(item8)
+  /TOKEN/i,
+  /_KEY$/i,
+  /API_?KEY/i,
+  /PRIVATE.*KEY/i,
+  /^DATABASE_URL$/i,
+  /^DB_URL$/i,
+  /^REDIS_URL$/i
+];
+function classifyEnvVar(name) {
+  if (BUILD_PREFIXES.some((p) => name.startsWith(p))) return "build";
+  if (LOCKED_PATTERNS.some((p) => p.test(name))) return "locked";
+  return "runtime";
+}
+function isEnvFile(p) {
+  return /^\.env(\.|$)/.test(path3.basename(p));
+}
+function extractEnvVars(files) {
+  const names = /* @__PURE__ */ new Set();
+  for (const file of files) {
+    if (isEnvFile(file.path)) {
+      for (const line of file.content.split("\n")) {
+        const trimmed = line.trim();
+        if (!trimmed || trimmed.startsWith("#")) continue;
+        const m = trimmed.match(/^([A-Z_][A-Z0-9_]*)\s*=/);
+        if (m) names.add(m[1]);
+      }
+      continue;
+    }
+    if (/\.(ts|tsx|js|jsx|mjs|cjs|py)$/.test(file.path)) {
+      for (const m of file.content.matchAll(/process\.env\.([A-Z_][A-Z0-9_]*)/g)) names.add(m[1]);
+      for (const m of file.content.matchAll(/import\.meta\.env\.([A-Z_][A-Z0-9_]*)/g)) names.add(m[1]);
+      for (const m of file.content.matchAll(
+        /os\.environ(?:\.get)?\s*\[?\s*['"]([A-Z_][A-Z0-9_]*)['"]/g
+      )) {
+        names.add(m[1]);
+      }
+    }
+  }
+  return [...names].sort().map((name) => ({ name, class: classifyEnvVar(name) }));
+}
+var BUILD_SECRET_NAME = [
+  /SECRET/i,
+  /PASSWORD/i,
+  /PASSWD/i,
+  /(^|_)API_?KEY($|_)/i,
+  // API_KEY / APIKEY (not plain *_KEY which may be public id)
+  /PRIVATE[_-]?KEY/i,
+  /ACCESS[_-]?TOKEN/i,
+  /(^|_)TOKEN$/i
+  // ends with TOKEN (e.g. SLACK_TOKEN) — bare client token = leak
+];
+function buildPrefixOf(name) {
+  return BUILD_PREFIXES.find((p) => name.startsWith(p)) ?? null;
+}
+function nameLooksSecret(name) {
+  return BUILD_SECRET_NAME.some((p) => p.test(name));
+}
+var SECRET_VALUE_PATTERNS = [
+  /AKIA[0-9A-Z]{16}/,
+  // AWS key id
+  /sk-(?:ant-api03-|proj-)?[A-Za-z0-9_-]{20,}/,
+  // OpenAI / Anthropic
+  /AIza[0-9A-Za-z\-_]{35}/,
+  // Google API key
+  /-----BEGIN (?:RSA |OPENSSH |EC )?PRIVATE KEY-----/,
+  // PEM
+  /xox[bpsoa]-[0-9]{10,}-/,
+  // Slack
+  /eyJ[A-Za-z0-9_-]+\.eyJ[A-Za-z0-9_-]+\./
+  // JWT
+];
+function valueLooksSecret(value) {
+  if (looksLikePlaceholder(value)) return false;
+  return SECRET_VALUE_PATTERNS.some((p) => p.test(value));
+}
+function envFileAssignments(file) {
+  const out = [];
+  for (const line of file.content.split("\n")) {
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith("#")) continue;
+    const m = trimmed.match(/^([A-Z_][A-Z0-9_]*)\s*=\s*(.*)$/);
+    if (!m) continue;
+    let value = m[2].trim();
+    value = value.replace(/^['"]|['"]$/g, "");
+    out.push({ name: m[1], value });
+  }
+  return out;
+}
+function scanBuildSecrets(files) {
+  const findings = [];
+  const seen = /* @__PURE__ */ new Set();
+  const push = (name, file, reason) => {
+    if (seen.has(name)) return;
+    seen.add(name);
+    const base = {
+      severity: "critical",
+      rule: "Secret in Build-time Variable",
+      file,
+      line: null,
+      message: `${reason} \u2014 ${name} \uAC12\uC740 \uBE4C\uB4DC \uC2DC \uBE0C\uB77C\uC6B0\uC800 \uCF54\uB4DC(\uBC88\uB4E4)\uC5D0 \uADF8\uB300\uB85C \uBC15\uD600 \uB204\uAD6C\uB098 \uBCFC \uC218 \uC788\uC5B4\uC694. \uACF5\uAC1C \uC811\uB450\uC0AC(NEXT_PUBLIC_/VITE_/REACT_APP_)\uB97C \uBE7C\uACE0 \uC11C\uBC84 \uC804\uC6A9 \uBE44\uBC00\uB85C \uBD84\uB9AC\uD558\uC138\uC694.`,
+      inGitHistory: false
+    };
+    findings.push({ ...base, aiPrompt: buildAiPrompt(base) });
+  };
+  for (const file of files) {
+    if (isFalsePositivePath(file.path)) continue;
+    if (/^\.env(\.|$)/.test(path3.basename(file.path))) {
+      for (const { name, value } of envFileAssignments(file)) {
+        if (!buildPrefixOf(name)) continue;
+        if (value === "" || looksLikePlaceholder(value)) continue;
+        if (nameLooksSecret(name)) {
+          push(name, file.path, "\uBE44\uBC00\uB85C \uBCF4\uC774\uB294 \uC774\uB984\uC758 \uACF5\uAC1C \uBCC0\uC218");
+        } else if (valueLooksSecret(value)) {
+          push(name, file.path, "\uACF5\uAC1C \uBCC0\uC218\uC5D0 \uC2E4\uC81C \uBE44\uBC00\uD0A4 \uD615\uD0DC\uC758 \uAC12");
+        }
+      }
+      continue;
+    }
+    if (/\.(ts|tsx|js|jsx|mjs|cjs)$/.test(file.path)) {
+      for (const m of file.content.matchAll(
+        /(?:process\.env|import\.meta\.env)\.([A-Z_][A-Z0-9_]*)/g
+      )) {
+        const name = m[1];
+        if (!buildPrefixOf(name)) continue;
+        if (nameLooksSecret(name)) push(name, file.path, "\uBE44\uBC00\uB85C \uBCF4\uC774\uB294 \uC774\uB984\uC758 \uACF5\uAC1C \uBCC0\uC218");
+      }
+    }
+  }
+  return findings;
 }
 
 // src/secret-scan.ts
@@ -478,6 +680,7 @@ function scanSecrets(files) {
         if (!match) continue;
         const value = match[1] || match[0];
         if (looksLikePlaceholder(value)) continue;
+        if (rule.id === "SEC-03" && isPemMarkerReference(line, value)) continue;
         explicitHitOnLine = true;
         pushFinding(findings, {
           severity: rule.severity,
@@ -488,14 +691,39 @@ function scanSecrets(files) {
           inGitHistory: false
         });
       }
+      const fallbackValues = /* @__PURE__ */ new Set();
+      for (const fb of findSecretFallbacks(line)) {
+        fallbackValues.add(fb.fallback);
+        pushFinding(findings, {
+          severity: "high",
+          rule: "Hardcoded Secret Fallback",
+          file: file.path,
+          line: lineNo,
+          message: "\uD658\uACBD\uBCC0\uC218\uAC00 \uC5C6\uC744 \uB54C \uC4F0\uB294 \uBE44\uBC00\uAC12(\uD3F4\uBC31)\uC774 \uCF54\uB4DC\uC5D0 \uADF8\uB300\uB85C \uC801\uD600 \uC788\uC5B4\uC694. \uD3F4\uBC31\uAC12\uC744 \uC9C0\uC6B0\uACE0 \uBC30\uD3EC \uC124\uC815\uAC12\uC73C\uB85C\uB9CC \uC8FC\uC785\uD558\uC138\uC694.",
+          inGitHistory: false
+        });
+      }
       if (explicitHitOnLine) continue;
-      const reportedValues = /* @__PURE__ */ new Set();
+      const reportedValues = new Set(fallbackValues);
       VAR_ASSIGNMENT.lastIndex = 0;
       let am;
       while ((am = VAR_ASSIGNMENT.exec(line)) !== null) {
         const name = am[1];
         const value = am[2];
         if (looksLikePlaceholder(value)) continue;
+        if (looksLikePublicUrl(value)) continue;
+        if (isAccountVarName(name) && looksLikePersonalAccount(value)) {
+          reportedValues.add(value);
+          pushFinding(findings, {
+            severity: "high",
+            rule: "Hardcoded Personal Account",
+            file: file.path,
+            line: lineNo,
+            message: "\uAC1C\uC778 \uACC4\uC815\uC73C\uB85C \uBCF4\uC774\uB294 \uAC12\uC774 \uCF54\uB4DC\uC5D0 \uC9C1\uC811 \uC801\uD600 \uC788\uC5B4\uC694. \uACF5\uC6A9/\uC11C\uBE44\uC2A4 \uACC4\uC815\uC744 \uC4F0\uACE0 \uBC30\uD3EC \uC124\uC815\uAC12\uC73C\uB85C \uBD84\uB9AC\uD558\uC138\uC694.",
+            inGitHistory: false
+          });
+          continue;
+        }
         if (!isSuspiciousVarName(name)) continue;
         if (!isLongOrHighEntropyValue(value)) continue;
         reportedValues.add(value);
@@ -514,6 +742,7 @@ function scanSecrets(files) {
         const value = qm[1] ?? qm[2] ?? qm[3] ?? "";
         if (reportedValues.has(value)) continue;
         if (looksLikePlaceholder(value)) continue;
+        if (looksLikePublicUrl(value)) continue;
         if (!looksLikeHighEntropySecret(value)) continue;
         reportedValues.add(value);
         pushFinding(findings, {
@@ -623,6 +852,123 @@ function checkGitHistory(cwd) {
   return findings;
 }
 
+// src/datafiles.ts
+import { execSync as execSync3 } from "child_process";
+import * as fs3 from "fs";
+import * as path5 from "path";
+var TIMEOUT2 = 3e4;
+function isGitRepo2(cwd) {
+  return fs3.existsSync(path5.join(cwd, ".git"));
+}
+function gitTrackedFiles(cwd) {
+  if (!isGitRepo2(cwd)) return null;
+  try {
+    const out = execSync3("git ls-files", {
+      cwd,
+      timeout: TIMEOUT2,
+      encoding: "utf-8",
+      stdio: ["pipe", "pipe", "pipe"]
+    });
+    return out.split("\n").map((l) => l.trim()).filter(Boolean);
+  } catch {
+    return null;
+  }
+}
+var SKIP_PATH = [
+  /(^|\/)__tests__\//,
+  /(^|\/)tests?\//,
+  /(^|\/)fixtures?\//,
+  /(^|\/)mocks?\//,
+  /(^|\/)examples?\//,
+  /(^|\/)samples?\//,
+  /(^|\/)docs?\//,
+  /(^|\/)node_modules\//,
+  /(^|\/)\.venv\//
+];
+function isSkippedPath(rel) {
+  return SKIP_PATH.some((p) => p.test(rel));
+}
+var SAMPLE_BASENAME = /(^|[._-])(sample|example|template|dummy|test|fixture|seed|schema)([._-]|$)/i;
+var DATA_EXTENSIONS = /* @__PURE__ */ new Set([
+  ".xlsx",
+  ".xls",
+  ".xlsm",
+  ".db",
+  ".sqlite",
+  ".sqlite3",
+  ".csv",
+  ".tsv",
+  ".mdb",
+  ".accdb",
+  ".parquet"
+]);
+var MIN_TEXT_DATA_BYTES = 64;
+function scanDataFiles(cwd) {
+  const tracked = gitTrackedFiles(cwd);
+  if (!tracked) return [];
+  const findings = [];
+  for (const rel of tracked) {
+    if (isSkippedPath(rel)) continue;
+    const ext = path5.extname(rel).toLowerCase();
+    if (!DATA_EXTENSIONS.has(ext)) continue;
+    const base = path5.basename(rel);
+    if (SAMPLE_BASENAME.test(base)) continue;
+    const full = path5.join(cwd, rel);
+    let size = 0;
+    try {
+      size = fs3.statSync(full).size;
+    } catch {
+      continue;
+    }
+    if (size === 0) continue;
+    const isText = ext === ".csv" || ext === ".tsv";
+    if (isText && size < MIN_TEXT_DATA_BYTES) continue;
+    const finding = {
+      severity: "high",
+      rule: "Data File in Git",
+      file: rel,
+      line: null,
+      message: "\uC5C5\uBB34/\uAE30\uBC00 \uB370\uC774\uD130\uB85C \uBCF4\uC774\uB294 \uD30C\uC77C\uC774 \uCF54\uB4DC \uC800\uC7A5\uC18C(git)\uC5D0 \uB4E4\uC5B4 \uC788\uC5B4\uC694. git \uC744 \uB370\uC774\uD130 \uC800\uC7A5\uC18C\uB85C \uC4F0\uC9C0 \uB9D0\uACE0 .gitignore \uC5D0 \uCD94\uAC00\uD55C \uB4A4 \uCD94\uC801\uC5D0\uC11C \uBE7C\uC138\uC694(\uBBFC\uAC10 \uB370\uC774\uD130\uBA74 IT\uBCF8\uBD80\uC5D0 \uC54C\uB9AC\uC138\uC694).",
+      inGitHistory: false
+    };
+    findings.push({ ...finding, aiPrompt: buildAiPrompt(finding) });
+  }
+  return findings;
+}
+var JSON_MAX_BYTES = 64 * 1024;
+function scanServiceAccountKeys(cwd) {
+  const tracked = gitTrackedFiles(cwd);
+  if (!tracked) return [];
+  const findings = [];
+  for (const rel of tracked) {
+    if (isSkippedPath(rel)) continue;
+    if (path5.extname(rel).toLowerCase() !== ".json") continue;
+    const base = path5.basename(rel);
+    if (SAMPLE_BASENAME.test(base)) continue;
+    const full = path5.join(cwd, rel);
+    let content;
+    try {
+      if (fs3.statSync(full).size > JSON_MAX_BYTES) continue;
+      content = fs3.readFileSync(full, "utf-8");
+    } catch {
+      continue;
+    }
+    const isServiceAccount = /"type"\s*:\s*"service_account"/.test(content);
+    const hasPrivateKey = /"private_key"\s*:\s*"-----BEGIN (?:RSA |EC )?PRIVATE KEY-----/.test(content);
+    if (!isServiceAccount || !hasPrivateKey) continue;
+    const finding = {
+      severity: "critical",
+      rule: "Service Account Key in Git",
+      file: rel,
+      line: null,
+      message: "\uD074\uB77C\uC6B0\uB4DC \uC11C\uBE44\uC2A4 \uACC4\uC815 \uD0A4(\uAC1C\uC778\uD0A4 \uD3EC\uD568)\uAC00 \uCF54\uB4DC \uC800\uC7A5\uC18C(git)\uC5D0 \uB4E4\uC5B4 \uC788\uC5B4\uC694 \u2014 \uC989\uC2DC \uD0A4\uB97C \uD3D0\uAE30\xB7\uC7AC\uBC1C\uAE09\uD558\uACE0, \uD30C\uC77C\uC744 \uC0AD\uC81C\uD55C \uB4A4 .gitignore \uC5D0 \uCD94\uAC00\uD558\uACE0 IT\uBCF8\uBD80\uC5D0 \uC54C\uB9AC\uC138\uC694.",
+      inGitHistory: false
+    };
+    findings.push({ ...finding, aiPrompt: buildAiPrompt(finding) });
+  }
+  return findings;
+}
+
 // src/index.ts
 var SEVERITY_ORDER = { critical: 0, high: 1, medium: 2, low: 3 };
 function determineVerdict(findings) {
@@ -638,11 +984,18 @@ function verdictToExitCode(verdict) {
   return 0;
 }
 function scan(args) {
-  const rootDir = path5.resolve(args.path);
+  const rootDir = path6.resolve(args.path);
   const files = scanFiles(rootDir);
   const framework = detectFramework(files);
   const envVars = extractEnvVars(files);
-  const findings = [...scanSecrets(files), ...checkGitHistory(rootDir)];
+  const findings = [
+    ...scanSecrets(files),
+    ...scanBuildSecrets(files),
+    ...checkGitHistory(rootDir),
+    ...scanDataFiles(rootDir),
+    ...scanServiceAccountKeys(rootDir),
+    ...scanStreamlitTelemetry(files)
+  ];
   findings.sort((a, b) => SEVERITY_ORDER[a.severity] - SEVERITY_ORDER[b.severity]);
   const summary = { critical: 0, high: 0, medium: 0, low: 0 };
   for (const f of findings) summary[f.severity]++;
@@ -666,7 +1019,7 @@ function scan(args) {
 
 // src/cli.ts
 function parseArgs(argv) {
-  let path6 = "";
+  let path7 = "";
   let json = false;
   let noPrompt = false;
   for (const arg of argv) {
@@ -675,11 +1028,11 @@ function parseArgs(argv) {
     else if (arg.startsWith("--")) {
       process.stderr.write(`\uC54C \uC218 \uC5C6\uB294 \uC635\uC158: ${arg}
 `);
-    } else if (!path6) {
-      path6 = arg;
+    } else if (!path7) {
+      path7 = arg;
     }
   }
-  return { path: path6 || ".", json: json || true, noPrompt };
+  return { path: path7 || ".", json: json || true, noPrompt };
 }
 async function promptRepoUrl(cwd) {
   const origin = isGitRepo(cwd) ? getOriginUrl(cwd) : null;

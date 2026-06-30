@@ -18,7 +18,7 @@ description: 배포 전 검토(`/deploy-check`)에서 나온 문제를 확인 �
 | 모드 | 입력 정본 | 재검증 | 진입 |
 |---|---|---|---|
 | **A. 검토 수정**(기존) | `_engine.json` findings + `last-verdict.json` commit | `/deploy-check`(security-review) 재실행 | `/deploy-fix`(인자 없음) |
-| **B. 빌드 실패 수정**(신규) | **`logs.sh <app_id>` 빌드로그** + `references/deploy-failure-playbook.md`(deploy 스킬 번들) 진단 | **git push → `status.sh <app_id>` 재폴링** | `/deploy-fix --from-deploy-failure <app_id>` |
+| **B. 빌드 실패 수정**(신규) | **`logs.sh <app_id>` 빌드로그** + `../deploy/references/deploy-failure-playbook.md`(deploy 스킬 번들) 진단 | **git push → `status.sh <app_id>` 재폴링** | `/deploy-fix --from-deploy-failure <app_id>` |
 
 - **인자 `--from-deploy-failure <app_id>` 가 있으면 → 모드 B**(deploy 가 빌드 실패에서 위임한 경로). 그 `app_id` 를 대상으로 한다.
 - **인자가 없으면:** 최근 빌드 실패 앱을 감지해 본다 — `my-apps.sh` 로 내 앱을 조회하고, 가장 최근에 만든 앱이 아직 기동되지 않았으면(상태가 불확실하면) "방금 올리다 막힌 앱(○○)을 고칠까요, 아니면 배포 전 검토에서 나온 문제를 고칠까요?"를 `AskUserQuestion`(고정 2옵션: `방금 올리다 막힌 앱`·`검토에서 나온 문제`)으로 한 번 확인한다. 감지가 애매하거나 사용자가 검토 문제를 고르면 **모드 A**. (명시적으로 빌드 실패 앱을 골랐으면 모드 B, 그 `app_id` 사용.)
@@ -34,8 +34,9 @@ test -f .fursys-deploy-hub/_engine.json && test -f .fursys-deploy-hub/last-verdi
 ```
 - **`NO_ARTIFACTS`** → "먼저 **`/deploy-check`**(배포 전 검토)를 한 번 실행해 주세요. 무엇을 고쳐야 하는지 거기서 먼저 확인해야 제가 고쳐드릴 수 있어요." 안내 후 **멈춘다.**
 - **`HAS_ARTIFACTS`** → 두 파일을 읽는다:
-  - `_engine.json` 의 `findings[]` = `{severity, rule, file, line, message, inGitHistory, aiPrompt}`. 이게 **고칠 항목의 정본**이다.
-  - `last-verdict.json` 의 `commit`(검토 당시 코드)·`security`·`deployable`·`final`·`env_plan[]`.
+  - `_engine.json` 의 `findings[]` = `{severity, rule, file, line, message, inGitHistory, aiPrompt}`. 이게 **보안 고칠 항목의 정본**이다.
+  - `last-verdict.json` 의 `commit`(검토 당시 코드)·`security`·`deployable`·`final`·`env_plan[]`·**`deploy_fixes[]`**.
+  - **(deployfix2) `last-verdict.json.deploy_fixes[]` = 엔진 finding 에 없는 자동수정 가능 문제 목록**(`{type, severity, file, message, aiPrompt}`). security-review 가 적어 둔 **두 출처**를 담는다: ① 🚀 배포 준비 문제(`copy-public`·`port`·`start-cmd`·`streamlit-config` 등 — 4)·4-1 점검), ② 🔒 **LLM 심화 보안 발견(`type:"sec-llm"`)** — 3) 보안 심화에서 LLM 이 잡았으나 엔진이 `_engine.json` 으로 못 잡은 보안 문제(소스 박힌 개인계정 평문·DEBUG·CORS `*` 등). **이 목록의 `aiPrompt` 있는 항목도 ③의 자동수정 대상에 포함**한다 — 그래야 리포트가 "deploy-fix 가 고쳐줘요"라 안내한 문제를 실제로 고친다(계약갭 해소). `_engine.json`(엔진 보안 finding)과 **출처만 다를 뿐 같은 자동수정 파이프라인**으로 처리한다. **엔진 finding 이 비어 있어도(`findings:[]`) `deploy_fixes` 에 `sec-llm` 항목이 있으면 자동수정이 동작**한다(과거 `PLAN_EMPTY` 오판 해소). 없거나 `[]` 면 현행과 동일(엔진 보안 finding 만 처리).
 - LLM 심화 finding 의 자세한 맥락이 필요하면 `.md` 리포트 본문을 **참고용으로만** 읽을 수 있다(기계 입력 1순위는 어디까지나 `_engine.json`).
 
 ## ② commit 일치 확인 (낡은 리포트로 엉뚱한 수정 방지)
@@ -47,12 +48,14 @@ COMMIT_NOW=$(git rev-parse HEAD 2>/dev/null || echo null)
 - 일치하면 ③으로.
 
 ## ③ 자동수정 대상 선별 + 수정 계획 요약 (고정 형식)
-findings 를 **자동수정 대상**과 **사람 판단 필요(안내만)** 로 나눈다.
-- **자동수정 대상:** `aiPrompt` 가 있는 finding(검토가 만든 복붙 수정 지침). LLM 이 그 지침대로 코드를 고칠 수 있는 것.
-- **자동수정에서 제외(안내만):** 아래는 LLM 이 만들 수 없는 값이라 자동수정·재시도 대상에서 뺀다.
+**보안 finding(`_engine.json`)** 과 **배포준비 문제(`last-verdict.json.deploy_fixes`)** 를 합쳐 **자동수정 대상**과 **사람 판단 필요(안내만)** 로 나눈다.
+- **자동수정 대상:**
+  - `aiPrompt` 가 있는 **보안 finding**(`_engine.json` — 검토가 만든 복붙 수정 지침). LLM 이 그 지침대로 코드를 고칠 수 있는 것.
+  - **(deployfix2) `aiPrompt` 가 있는 배포준비 문제**(`last-verdict.json.deploy_fixes[]` — `type` 이 `copy-public`·`port`·`start-cmd`·`next-build-env`·`volume-perm`·`streamlit-config`·`secrets-to-env`·`static-folder`·`dockerfile` 등). 이것도 같은 자동수정 파이프라인으로 ⑤에서 고친다(public 폴더 생성·포트 맞춤·`.streamlit/config.toml` 생성·설정값 폴백·정적 폴더 좁히기 등). **소스 최소 변경 원칙**: 코드 변경 없이 설정파일/Dockerfile 로 풀 수 있으면 그 경로를 우선한다(⑤-4 참조).
+- **자동수정에서 제외(안내만):** 아래는 LLM 이 만들 수 없거나 위험한 값이라 자동수정·재시도 대상에서 뺀다.
   - `last-verdict.json.env_plan[]` 중 `note=="ask"` 인 항목(사람이 정하는 값 — 관리자 비밀번호 등).
   - 외부 서비스 자격증명(외부 API 키·토큰·사외 비밀번호 등).
-  - `aiPrompt` 가 비어 있어(`null`) 수정 지침이 없는 finding.
+  - `aiPrompt` 가 비어 있어(`null`) 수정 지침이 없는 finding **또는 deploy_fixes 항목**(예: Dockerfile 자체 부재로 표준을 통째 새로 써야 하는데 지침이 없는 경우 — 리포트 안내로만).
   - **`inGitHistory:true` 인 시크릿 노출** — 코드를 고쳐도 과거 기록에 남으므로 자동수정으로 끝나지 않는다. "해당 키를 폐기·재발급하고 IT본부에 알리세요"로 안내만 한다(자동수정·재시도 제외).
 
 수정 계획은 **고정 형식으로 렌더**한다(모델별 문구 흔들림 방지) — 번들 스크립트로 출력:
@@ -86,7 +89,18 @@ node "$CLAUDE_PLUGIN_ROOT/skills/deploy-fix/scripts/plan-summary.mjs" .fursys-de
      4. **`.env.example` 빈 키:** `.env.example` 에 `X=`(빈 키) + 한 줄 설명을 추가(자가문서화). **값은 적지 않는다.**
      - **보안 불변식(절대):** 뺀 값을 **화면·로그·git·서버에 노출하거나 전송하지 않는다.** `.env` 는 그 PC 로컬에만 남고 `.gitignore`+`.dockerignore` 로 전송 차단된다. 사용자 통보는 **시크릿 미출력 고정 문구**(키 이름만, 값 금지)로만: "하드코딩돼 있던 값을 코드에서 빼고 **본인 PC `.env`에 안전하게 옮겨 적었어요**(git에 안 올라가요). 자료 갱신은 그대로 동작해요." (이 문구는 verbatim 고정 — 즉석에서 새로 짓지 않는다.)
      - **이미 git 이력에 커밋된 시크릿(`inGitHistory:true`)은 별개** — 코드만 고쳐선 안 끝난다(폐기·재발급·IT 통보, ③·⑦ 안내 유지). 이 단계는 **코드에 하드코딩됐으나 아직 이력에 안 남은** 값의 로컬 보존만 다룬다.
-4. **변경한 파일 목록을 사용자에게 쉬운 말로 통보**한다(어떤 파일의 무엇을 고쳤는지). 시크릿 값은 출력하지 않는다. (위 값 보존을 한 경우, 통보에 그 **고정 문구**를 함께 넣는다.)
+4. **(deployfix2) 확정된 `deploy_fixes` 항목의 `aiPrompt` 대로 배포준비 문제를 고친다.** 보안 finding 과 같은 방식으로 `type`·`file`·`message`·`aiPrompt` 를 근거로 직접 Edit/Write 한다. 유형별 구체 처리는 빌드로그 모드(⑩-3)와 동일 규칙을 따른다(중복 정의 금지 — 같은 동작):
+   - **(소스 최소 변경 원칙 — 우선 경로) 사용자 코드를 직접 손대기보다 env·설정파일·Dockerfile 로 풀 수 있으면 그 경로를 먼저 쓴다.** `aiPrompt` 에 비침투적(코드 무변경·설정파일 생성·한두 줄 추가) 경로가 적혀 있으면 그대로 따른다. **코드를 뜯어고치는 침투적 수정은 마지막 수단**이고, 그럴 때만 ⑤의 통보에 **어떤 파일의 무엇을 왜 바꿨는지(범위·이유)** 를 사용자에게 쉬운 말로 명시한다. `message` 가 "코드를 일부 바꿔야 해요(범위…)"로 적혀 있으면 그 안내를 그대로 전한다. diff 는 최소로 — 인접 코드·포맷·주석을 함께 손대지 않는다.
+   - **`copy-public` → `public/.gitkeep` 생성**(⑩-3 `copy-public` 과 동일): 프로젝트 루트에 `public/` 디렉터리 + 빈 `public/.gitkeep`. **Dockerfile 은 고치지 않는다.**
+   - **`secrets-to-env`(항목25 — Streamlit `st.secrets`→설정값) → 로컬 동작 보존하며 비침투적으로:** 사내 서버는 `secrets.toml` 을 직접 지원하지 않아 `st.secrets["X"]` 가 깨진다. **코드를 통째로 `os.environ` 으로 바꾸지 않는다**(로컬 `secrets.toml` 흐름이 파괴됨). `aiPrompt` 대로 ① 앱 진입부에 `from dotenv import load_dotenv; load_dotenv()` 한 줄 추가(이미 있으면 생략), ② 깨지는 `st.secrets["X"]` 호출만 `st.secrets.get("X", os.environ.get("X"))` 폴백으로 **최소 교체**(secrets.toml 있으면 그대로, 없으면 env). ③ **`.env.example` 생성/보강**(코드가 참조하는 키만 빈 값으로 — 값은 적지 않는다) + ④ 로컬 실행 안내 한 줄(주석/README: "로컬은 `.streamlit/secrets.toml` 또는 `.env`, 사내 서버는 설정값으로 주입"). `requirements.txt` 에 `python-dotenv` 가 없으면 한 줄 추가. 통보(고정): "사내 서버에서 비밀값을 읽도록 설정값을 더했어요 — **로컬 실행(`secrets.toml`)은 그대로 동작**해요. `.env.example` 도 만들어 뒀어요(빈 칸만, 비밀값은 안 적었어요)." 시크릿 값은 출력하지 않는다.
+   - **`static-folder`(항목35 — Flask/FastAPI/Express 정적 루트가 서버 폴더 전체) → 최소 수정 + 안내:** 서버 루트 전체(소스·`.env`·설정)가 URL 로 노출되는 위험. **코드를 크게 뜯어고치지 않는다.** `aiPrompt` 대로 정적 폴더 인자만 안전한 전용 폴더로 좁히는 **한 줄 변경**(`static_folder="static"`·`StaticFiles(directory="static")`·`express.static("public")`)을 적용하고, 그 폴더가 없으면 함께 생성(빈 `.gitkeep`). **단, 공개 자산이 실제로 루트에 흩어져 있어 파일 이동이 필요한 경우(=`aiPrompt:null`·`message` 가 "공개 파일만 옮겨야 해요"로 안내)는 자동으로 파일을 옮기지 않는다** — ⑦에서 "어떤 파일이 외부 공개여도 되는지는 직접 정하셔서 `static/` 으로 옮겨 주세요"로 안내만 한다(공개 여부는 사람 판단). 한 줄 변경을 적용했으면 통보에 "정적 파일을 내보내는 폴더를 서버 전체에서 `static`(공개 전용 폴더)으로 좁혔어요 — 소스·설정이 외부에 노출되지 않게요." 를 넣는다.
+   - **`streamlit-config` → `.streamlit/config.toml` 표준 생성:** 프로젝트 루트에 `.streamlit/config.toml` 이 없거나 표준 설정이 빠졌으면 생성·보강한다. **사내 표준(필수):** `[browser]\ngatherUsageStats = false`(텔레메트리 차단 — 사내 정책), `[server]\nheadless = true`, 포트가 Dockerfile `EXPOSE` 와 달라야 하면 `port = <EXPOSE 값>`. 기존 키는 보존(병합).
+   - **`port` → EXPOSE/시작포트 맞춤**(⑩-3 `port` 동일): `aiPrompt` 가 가리키는 대로 Dockerfile `EXPOSE` 또는 앱 시작 포트를 일치시킨다.
+   - **`start-cmd` / `next-build-env` / `volume-perm` / `dockerfile`** → 각 `aiPrompt` 지침대로 Dockerfile 의 해당 부분만 외과적으로 고친다(다른 단계 보존).
+   - **(odbc-base) Python + ODBC/pyodbc 앱의 base 이미지 고정:** deploy-fix 가 **Python Dockerfile 의 `FROM` 을 새로 쓰거나 base 를 고를 때**(특히 `dockerfile` 자동수정에서 base 줄을 만질 때), 그 앱이 **`pyodbc`·ODBC·MSSQL 드라이버(`unixodbc`·`msodbcsql*`)에 의존**하면 base 를 **`python:3.x-slim-bookworm`(Debian 12)** 로 고정한다. **`python:3.x-slim`(태그 미고정)·`-slim-trixie`(Debian 13)를 쓰지 않는다** — trixie 는 OpenSSL SHA1 서명 거부로 Microsoft ODBC 드라이버(`msodbcsql18`) 설치/실행이 깨진다. 의존 판단 근거: `requirements.txt`/`pyproject.toml` 의 `pyodbc`, Dockerfile 의 `unixodbc-dev`·`msodbcsql`·`ACCEPT_EULA`. ODBC 의존이 **아닌** Python 앱의 base 는 건드리지 않는다(기존 줄 보존 — 과수정 금지). **이 규칙은 deploy-fix 의 생성/수정 로직에만 적용**한다(create-app 템플릿은 별도). **멀티서비스(services.json 존재)에서도 동일** — 서비스마다 그 dir 의 `requirements.txt`/Dockerfile 로 ODBC 의존을 **서비스별로 독립 판정**해, backend/api 같은 한 서비스만 ODBC 면 그 서비스 Dockerfile 의 base 만 `slim-bookworm` 으로 고정한다(항목29 — deploy `references/multiservice.md` §10 연계). ODBC 아닌 형제 서비스(프론트 등)는 그대로 둔다.
+   - **`aiPrompt:null` 인 deploy_fixes 항목은 고치지 않는다**(③에서 이미 안내만으로 분류 — Dockerfile 자체 부재 등). ⑦에서 안내한다.
+4-1. **(gitignore 충돌 점검 — 생성 파일이 무시되지 않게) 항목23.** `copy-public`·`streamlit-config`·`static-folder` 등이 **새로 만든 파일**(`public/.gitkeep`·`.streamlit/config.toml`·`static/.gitkeep` 등)은 원본 `.gitignore` 가 그 경로를 제외하면 **`git add` 해도 누락 → push 해도 배포에 안 실려** 같은 실패가 반복된다(특히 `.streamlit/secrets.toml` 만 무시하려다 `.streamlit/` 디렉터리 통째 무시, `public/`·`static/` 통째 무시가 흔하다). **생성 직후 각 파일마다** `git check-ignore -q <경로>` 의 **종료코드**로 무시 여부를 판정한다(`rc=0`=무시됨, `rc=1`=추적됨). 무시되면(`rc=0`) **프로젝트 `.gitignore` 끝에 부정 패턴(`!<경로>`) 한 줄**을 추가해 그 파일만 추적되게 보정한다(원본 무시 규칙은 그대로 두고 예외만 추가 — 외과적). 예: `.streamlit/` 가 무시되면 `!.streamlit/` + `!.streamlit/config.toml` 두 줄(디렉터리·파일 둘 다 풀어야 git 이 본다 — 디렉터리가 무시되면 그 안 파일은 부정 패턴이 안 먹는다), `public/` 무시면 `!public/` + `!public/.gitkeep`. **`.env`·`secrets.toml`·키 파일 등 시크릿 경로는 절대 부정 패턴으로 풀지 않는다**(무시가 정상 — `secrets-to-env`(④-2~3)의 `.env` gitignore 보장과 충돌 금지). 보정 후 **`git check-ignore -q <경로>` 가 `rc=1`(추적됨)** 인지 재확인한다(주의: `-v`(verbose)는 부정 패턴이 매칭돼도 그 라인을 출력하고 `rc=0` 을 내므로 "빈 출력"으로 판정하면 안 된다 — `-q` 의 종료코드로만 본다). 보강한 `.env` 등은 여전히 `rc=0`(무시) 이어야 정상. 통보에 "설정 파일이 git 제외 규칙에 걸려 안 올라가던 걸 풀어 뒀어요(비밀 파일은 그대로 제외)." 한 줄을 넣는다.
+5. **변경한 파일 목록을 사용자에게 쉬운 말로 통보**한다(어떤 파일의 무엇을 고쳤는지). 시크릿 값은 출력하지 않는다. (위 값 보존을 한 경우, 통보에 그 **고정 문구**를 함께 넣는다.)
 
 ## ⑥ 자동 재검토 (최대 2라운드 — 진전 없으면 즉시 중단)
 수정 직후 **`/deploy-check`(security-review) 로직을 자동 실행**해 통과 여부를 다시 판정하고, 새 `.md` 리포트·`_engine.json`·`last-verdict.json` 을 갱신한다.
@@ -118,7 +132,7 @@ node "$CLAUDE_PLUGIN_ROOT/skills/deploy-fix/scripts/plan-summary.mjs" .fursys-de
 "$CLAUDE_PLUGIN_ROOT/skills/deploy/scripts/logs.sh" "<app_id>"
 ```
 (`$CLAUDE_PLUGIN_ROOT` 가 안 잡히면: `LS="$(find "$HOME/.claude/plugins" -path '*/fursys-deploy-hub/skills/deploy/scripts/logs.sh' 2>/dev/null | head -1)"; "$LS" "<app_id>"`)
-- **`LOGS_OK`** → 이어지는 JSON `{ "status", "deployment_uuid", "logs" }` 를 읽는다. `logs` 텍스트(끝부분 = 실제 에러)를 **deploy 스킬 번들 `references/deploy-failure-playbook.md`** 의 유형(의존성 누락 / lockfile / 타입에러 / 포트 / 시작명령 / Dockerfile 단계 / 필수 설정값 누락)에 매핑한다.
+- **`LOGS_OK`** → 이어지는 JSON `{ "status", "deployment_uuid", "logs" }` 를 읽는다. `logs` 텍스트(끝부분 = 실제 에러)를 **deploy 스킬 번들 `../deploy/references/deploy-failure-playbook.md`** 의 유형(의존성 누락 / lockfile / 타입에러 / 포트 / 시작명령 / Dockerfile 단계 / 필수 설정값 누락)에 매핑한다.
 - **로그가 비었거나 `deployment_uuid` 가 `null`** → "자세한 빌드 기록을 가져오지 못했어요. 잠시 후 다시 시도하거나 IT본부에 문의하세요." 하고 **멈춘다**(없는 원인 지어내지 않는다).
 - **`UNAUTHORIZED`/`NOT_FOUND`/`PROXY_ERROR`** → 각각 키 재발급·미등록·재시도 안내 후 멈춘다(deploy ⑨ 결과 코드와 동일).
 - **시크릿 비노출:** 로그 원문을 통째로 옮기지 않는다. 원인이 된 **핵심 줄만** 추리고, 비밀번호·키처럼 보이는 값은 가린다(proxy 스크럽 1차 + 여기 2차).
@@ -141,6 +155,7 @@ node "$CLAUDE_PLUGIN_ROOT/skills/deploy-fix/scripts/plan-summary.mjs" --logs <�
 3. **playbook 진단대로 코드 Edit.** 한 가지씩 고치고, **어떤 파일의 무엇을 고쳤는지** 쉬운 말로 통보한다(시크릿 미출력). 유형별 구체 수정은 아래와 같다(확인 후에만 적용):
    - **`oom`(빌드 메모리 부족) → `next.config` 수정:** 프로젝트 루트의 `next.config.mjs`/`next.config.js`/`next.config.ts` 중 존재하는 것에서, 최상위 config 객체에 `experimental: { cpus: 1, workerThreads: false }` 를 **병합**한다(이미 `experimental` 가 있으면 그 안에 `cpus`·`workerThreads` 만 추가/덮어쓰고 다른 키는 보존). `output: 'standalone'` 등 기존 키는 **건드리지 않는다.** **`NODE_OPTIONS=--max-old-space-size` 상향은 넣지 않는다**(해법 아님 — 오히려 메모리를 더 키운다). 통보: "앱을 만드는 부담을 줄이는 설정을 `next.config` 에 넣었어요. 메모리 부족으로 멈추던 문제예요." `output: 'standalone'` 제거(최후수단)는 이미지 구조를 바꾸는 아키텍처 변경이라 **자동수정에서 제외** — ⑪에서 안내만 한다.
    - **`copy-public`(public 폴더 없음) → `public/.gitkeep` 생성:** 프로젝트 루트에 `public/` 디렉터리를 만들고 빈 `public/.gitkeep` 파일을 작성한다. **Dockerfile 은 고치지 않는다.** 통보: "비어 있던 'public' 폴더를 만들어 뒀어요. 이제 마지막 복사 단계가 통과해요."
+   - **`dockerfile`(빌드 단계 실패) → 해당 단계만 외과적으로 수정.** **(odbc-base)** 그 수정이 **Python + ODBC/pyodbc(MSSQL `msodbcsql*`·`unixodbc`) 앱의 `FROM`/base 를 만질 때**는 base 를 **`python:3.x-slim-bookworm`(Debian 12)** 으로 고정한다(`-slim` 태그 미고정·`-slim-trixie`=Debian 13 금지 — trixie 의 OpenSSL SHA1 거부로 `msodbcsql18` 설치/실행이 깨진다). ODBC 비의존 Python 앱·다른 단계 수정은 base 줄을 건드리지 않는다(과수정 금지). 이 규칙은 deploy-fix 수정 로직 전용(create-app 템플릿 별도).
 4. **git push 로 재배포**한다(=Coolify webhook 자동 재배포). **`/deploy` 재실행(재-POST) 금지 — 이중배포 가드 불변.** 같은 앱에 다시 올라간다.
    ```bash
    git add -A && git commit -m "fix: 빌드 실패 자동 수정 (deploy-fix)" && git push

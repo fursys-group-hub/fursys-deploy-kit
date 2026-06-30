@@ -75,19 +75,25 @@ test -f .fursys-deploy-hub/services.json && cat .fursys-deploy-hub/services.json
 - `--volumes <JSON 배열>` — service.volumes 가 있으면 영속 볼륨 경로 배열(예: `["/data"]`). proxy 가 Coolify persistent storage 로 보장 → 상태저장(SQLite·업로드) 데이터가 재배포 후에도 유지. 없으면 생략. ⚠️ non-root 앱은 그 앱 Dockerfile 이 `USER` 전에 해당 경로를 mkdir+chown 해야 컨테이너가 쓸 수 있다(앱 레포 책임 — 배포 전 검토의 배포가능성 점검에서 경고).
 - subdomain(4번째 위치 인자) = 3번에서 계산한 그 서비스의 서브도메인
 - port(5번째) = service.port
-- env_vars(stdin) = 5번에서 만든 그 서비스의 배열
+- env_vars = 5번에서 만든 그 서비스의 배열. **서비스마다 임시파일(`--env-file`)로 전달**한다(단일배포 ⑥과 동일 — 시크릿이 argv 에 안 남고 Windows stdin 파이프 불안정 우회. deploy.sh 가 읽은 즉시 삭제).
 
 ```bash
 # 예: api 먼저 (dockerfile 기본이면 --dockerfile-loc 생략. service.volumes 있으면 --volumes)
-printf '%s' "$API_ENV_JSON" | "$CLAUDE_PLUGIN_ROOT/skills/deploy/scripts/deploy.sh" \
+API_ENV_TMP="$(mktemp -t fdhenv.XXXXXX 2>/dev/null || echo "${TMPDIR:-/tmp}/fdhenv.$$.api")"
+( umask 077; printf '%s' "$API_ENV_JSON" > "$API_ENV_TMP" )
+"$CLAUDE_PLUGIN_ROOT/skills/deploy/scripts/deploy.sh" \
   "fursys-group-hub/cataloglens" "$COMMIT" "iloom-hub" "catalog-api" 8100 "" \
-  --service api --base-dir backend --volumes '["/data"]'
+  --env-file "$API_ENV_TMP" --service api --base-dir backend --volumes '["/data"]'
+rm -f "$API_ENV_TMP" 2>/dev/null || true
 # → app_id=cataloglens-api, base_directory=/backend, dockerfile_location=/Dockerfile, 볼륨 /data 보장
 
 # 그다음 web
-printf '%s' "$WEB_ENV_JSON" | "$CLAUDE_PLUGIN_ROOT/skills/deploy/scripts/deploy.sh" \
+WEB_ENV_TMP="$(mktemp -t fdhenv.XXXXXX 2>/dev/null || echo "${TMPDIR:-/tmp}/fdhenv.$$.web")"
+( umask 077; printf '%s' "$WEB_ENV_JSON" > "$WEB_ENV_TMP" )
+"$CLAUDE_PLUGIN_ROOT/skills/deploy/scripts/deploy.sh" \
   "fursys-group-hub/cataloglens" "$COMMIT" "iloom-hub" "catalog" 3000 "" \
-  --service web --base-dir frontend
+  --env-file "$WEB_ENV_TMP" --service web --base-dir frontend
+rm -f "$WEB_ENV_TMP" 2>/dev/null || true
 # → app_id=cataloglens-web
 ```
 - 각 호출의 결과 코드는 단일배포 ⑦과 똑같이 처리한다. **`CREATED`/`REDEPLOYED` 면 그 서비스마다 ⑦-1 종결 폴링 루프(`status.sh <app_id>` backoff 반복)를 돌려 `RUNNING`(성공)/`FAILED`(→⑨)까지 따라간 뒤 다음 서비스로 넘어간다**(deploy.sh 는 POST 까지만 — 종결 대기는 스킬이 한다). `REDEPLOY_WEBHOOK` 은 폴링하지 않는다. 409 등은 ⑦ 그대로.
@@ -98,6 +104,11 @@ printf '%s' "$WEB_ENV_JSON" | "$CLAUDE_PLUGIN_ROOT/skills/deploy/scripts/deploy.
 - 시작: "기능을 먼저 올리고, 그다음 화면을 올릴게요. (화면이 기능 주소를 알아야 해서 순서가 정해져 있어요.)"
 - 각 단계 완료: "기능 올라갔어요 → 주소: https://catalog-api.iloom.hub.fursys.com"
 - 전체 완료: 모든 서비스 주소를 보여주고, 대표 주소(primary = 화면)를 강조. "이후 코드 수정은 그냥 git push 하면 양쪽 다 자동으로 다시 배포돼요."
+
+## 10. 서비스 base 이미지 — ODBC/MSSQL 의존 서비스는 slim-bookworm (항목29, 항목10 연계)
+멀티서비스에서 **어느 한 서비스(보통 backend/api)가 `pyodbc`·ODBC·MSSQL 드라이버(`unixodbc`·`msodbcsql*`)에 의존**하면, 그 서비스 Dockerfile 의 Python base 는 **`python:3.x-slim-bookworm`(Debian 12)** 이어야 한다. **`python:3.x-slim`(태그 미고정)·`-slim-trixie`(Debian 13) 금지** — trixie 는 OpenSSL SHA1 서명 거부로 `msodbcsql18` 설치/실행이 깨진다(fgdw=MSSQL 연결 시 흔하다).
+- deploy 는 **기존 서비스 Dockerfile 을 그대로 사용**하므로(base 를 새로 만들지 않음) 여기서는 base 를 바꾸지 않는다 — 다만 배포 전 검토(security-review 배포가능성)·`/deploy-fix` 가 그 서비스 Dockerfile 의 `FROM` 을 생성·수정할 때 이 규칙을 적용한다(deploy-fix SKILL ⑤ `odbc-base` — **단일·멀티서비스 모두 서비스 dir 별로 독립 적용**). 의존 판단 근거: 그 서비스 dir 의 `requirements.txt`/`pyproject.toml` 의 `pyodbc`, Dockerfile 의 `unixodbc-dev`·`msodbcsql`·`ACCEPT_EULA`.
+- ODBC 의존이 **아닌** 서비스의 base 는 건드리지 않는다(과수정 금지).
 
 ## 요약 (cataloglens 명시)
 > `--base-dir backend`(슬래시 없이)만 주면 proxy 가 `/backend` + `/Dockerfile` 로 정규화한다(Coolify 가 선행 슬래시를 요구). dockerfile 이 기본이 아니면(`Dockerfile.prod` 등)만 `--dockerfile-loc` 을 base 기준 상대로 준다.

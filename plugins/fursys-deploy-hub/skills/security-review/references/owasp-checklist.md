@@ -2,18 +2,18 @@
 
 > security-review 스킬이 "🔒 보안 심화" 단계에서 코드를 읽고 판단할 때 참조하는 룰셋이다.
 > **시크릿/키 탐지·git 이력은 엔진(`fdh-engine`)이 이미 결정적으로 처리한다.** 여기서는 그 위에
-> LLM이 코드를 읽고 판단해야 하는 OWASP 배포 시점 실수 14항목을 다룬다(시크릿 스캔 중복 금지).
+> LLM이 코드를 읽고 판단해야 하는 OWASP 배포 시점 실수 15항목을 다룬다(시크릿 스캔 중복 금지).
 > 각 항목: 무엇을 / 어떻게 찾나 / 심각도. 비개발자에게 보여줄 화면 문구는 "치명/높음/중간/낮음"을 쓴다.
 
 ## 목차
-1. OWASP 배포 시점 14항목
+1. OWASP 배포 시점 15항목
 2. 심각도 정의 (배포 가능 여부와의 관계)
 3. 오탐(False Positive) 가이드
 4. 사내 자주 쓰는 자격증명 맥락 (퍼시스 그룹 특화)
 
 ---
 
-## 1. OWASP 배포 시점 14항목
+## 1. OWASP 배포 시점 15항목
 
 배포 직전에 가장 흔히 터지는 보안 실수다. 코드를 읽고 아래 패턴이 보이면 해당 심각도로 보고한다.
 (시크릿 값 자체의 탐지는 엔진 몫 — 여기서는 "설정·구조·코드 흐름"의 위험을 본다.)
@@ -31,9 +31,10 @@
 | 9 | 디버그 엔드포인트 노출 | `/actuator`(전체 노출), `/_debug`, `/__debug__`, 디버그 라우트. `management.endpoints.web.exposure.include=*` | 높음 |
 | 10 | 인증 미보호 엔드포인트 | DRF `AllowAny`, Spring `permitAll`, NestJS 가드 누락. 보호돼야 할 API가 무인증 | 높음 |
 | 11 | 로그에 시크릿 출력 | `console.log(token)`, `logger.info(password)`, 예외 로깅에 자격증명 포함. 운영 로그로 키 유출 | 높음 |
-| 12 | 파일 업로드 검증 누락 | 확장자/크기/MIME 미검증 업로드. 경로 조작(`../`) 방어 부재 | 중간 |
-| 13 | SSRF 가능성 | 사용자가 준 URL을 서버가 그대로 fetch (`requests.get(user_url)`, `fetch(req.body.url)`). 내부망·메타데이터 접근 위험 | 높음 |
+| 12 | 파일 업로드/다운로드 경로 조작 | 업로드: 확장자/크기/MIME 미검증. **다운로드: 사용자 입력 파일명을 경로에 그대로 결합**(`/download/<file>`·`/files/{name}`·`send_file(BASE + req.params.name)`·`os.path.join(dir, user_name)`·`open(user_path)`) — `../` 로 상위 디렉터리 탈출 시 `.env`·소스·시스템파일 유출. 방어: 화이트리스트·basename 만 추출·`os.path.realpath` 가 허용 디렉터리 안인지 검증 | 높음 |
+| 13 | SSRF / URL 자격증명 삽입 | (a) 사용자가 준 URL을 서버가 그대로 fetch (`requests.get(user_url)`, `fetch(req.body.url)`). 내부망·메타데이터 접근 위험. (b) **연결 URL에 자격증명 평문 삽입**(`uid:pw@host` 형태 — `https://user:pass@host`·`mysql://admin:secret@db`·`mongodb://u:p@...`): URL 에 박힌 비밀은 로그·프록시·에러메시지로 새기 쉽다(코드·설정·로그 grep). 자격증명은 URL 이 아니라 별도 env 로 분리 | 높음 |
 | 14 | XSS(신뢰 못 할 입력 직접 렌더) | Next/React `dangerouslySetInnerHTML` + 외부 입력, Django `mark_safe`/`|safe` + 사용자 입력 | 중간 |
+| 15 | 정적 서빙 루트가 서버 폴더 전체 | Flask `Flask(__name__, static_folder=".")`/`static_folder=os.getcwd()`(또는 `send_from_directory(".", ...)`·`@app.route('/<path:p>')` 가 루트 그대로 서빙). 서버 디렉터리 전체(소스·`.env`·설정)가 URL 로 노출됨. FastAPI `StaticFiles(directory=".")`·Express `express.static(".")`·`express.static(__dirname)` 도 동형 | 높음 |
 
 **판단 원칙(LLM):**
 - 단순 문자열 매칭으로 단정하지 말고 **변수명·파일 위치·주변 흐름**을 함께 본다.

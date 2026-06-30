@@ -5,14 +5,36 @@
 > 사용자에게는 쉬운 우리말만 쓴다(서비스·서브도메인·env 같은 용어 금지). 스키마는 `contracts/service-manifest.schema.json`.
 
 ## 1. 멀티서비스인지 감지
-다음 중 하나라도 맞으면 "여러 부분으로 나뉜 앱"으로 본다:
-- **서브디렉터리에 Dockerfile 이 둘 이상** (루트가 아닌 곳에 두 개 이상). 예: `frontend/Dockerfile` + `backend/Dockerfile`.
+다음 **A·B·C 중 하나라도** 맞으면 "여러 부분으로 나뉜 앱"으로 본다. 위에서부터 신뢰도 순(A 가장 확실 → C 추정):
+
+- **A. 서브디렉터리에 Dockerfile 이 둘 이상** (루트가 아닌 곳에 두 개 이상). 예: `frontend/Dockerfile` + `backend/Dockerfile`.
   ```bash
   ls -1 */Dockerfile **/Dockerfile 2>/dev/null
   ```
-- **`docker-compose.yml`(또는 `compose.yaml`) 가 있고 서비스가 2개 이상.** compose 는 **구조 힌트로만 읽는다**(서비스 이름·빌드 디렉토리(`build.context`)·포트(`ports`/`expose`)·`depends_on`). **배포에는 compose 를 쓰지 않는다** — 어디까지나 Dockerfile 단위로 N개를 올린다.
+- **B. `docker-compose.yml`(또는 `compose.yaml`) 가 있고 서비스가 2개 이상.** compose 는 **구조 힌트로만 읽는다**(서비스 이름·빌드 디렉토리(`build.context`)·포트(`ports`/`expose`)·`depends_on`). **배포에는 compose 를 쓰지 않는다** — 어디까지나 Dockerfile 단위로 N개를 올린다.
+- **C. 디렉터리 구조 + 패키지 매니페스트로 추정** (Dockerfile·compose 가 **하나도 없을 때**의 보강 — 이게 빠져서 backend(Python)+frontend(Vite) 류가 단일 `framework` 로 오감지되던 구멍이다).
+  - **서로 다른 두 서브디렉터리**가 각자 **독립 패키지 매니페스트**를 가지면 별개 부분으로 본다. 한 디렉터리당 매니페스트는 아래 중 하나:
+    - 프론트(Node 계열): `package.json` (안에 `next`/`react`/`vite`/`@nestjs/*` 의존). 단 **루트에도 `package.json` 이 있고 서브가 그 워크스페이스(monorepo workspaces)** 면 한 패키지로 보고 멀티 아님 — 루트 `package.json` 의 `workspaces` 필드를 먼저 확인.
+    - 백(Python 계열): `requirements.txt` / `pyproject.toml` / `Pipfile` (FastAPI·Django·Flask 등).
+    - 백(JVM): `build.gradle`(`.kts`) / `pom.xml` (Spring 등).
+  - 판정: **서로 다른 디렉터리에 위 매니페스트가 2종 이상 분포**하면 멀티서비스. 흔한 형태:
+    - `frontend/package.json` + `backend/requirements.txt`
+    - `web/package.json` + `api/pyproject.toml`
+    - `client/package.json` + `server/package.json` (둘 다 Node 이고 루트 workspaces 가 **아닐** 때)
+  ```bash
+  # Dockerfile·compose 가 없을 때만 가동하는 추정. 서브디렉터리별 매니페스트를 모은다.
+  # (루트 자신은 제외 — 루트 단일 매니페스트는 단일서비스다.)
+  find . -mindepth 2 -maxdepth 2 \
+    \( -name package.json -o -name requirements.txt -o -name pyproject.toml \
+       -o -name Pipfile -o -name pom.xml -o -name 'build.gradle*' \) \
+    -not -path '*/node_modules/*' -not -path '*/.venv/*' -not -path '*/venv/*' \
+    2>/dev/null | sort -u
+  # 위 출력에서 서로 다른 부모 디렉터리가 2개 이상이면 멀티서비스 후보.
+  # (단, 모두 한 디렉터리 밑이면 단일. 루트 package.json 의 workspaces 가 서브를 포함하면 단일.)
+  ```
+  - C 로 감지하면 매니페스트의 프레임워크로 `port`(§3 기본값)와 `primary`(화면 쪽=Next/Vite/React 등 프론트)를 정하고, **각 부분에 Dockerfile 이 없으므로 §3·framework-rules 의 정준 Dockerfile 골격으로 부분별 Dockerfile 을 같이 생성**해야 배포된다(없으면 배포 단계에서 빌드 실패). 이건 사용자에게 "두 부분으로 보여서 각각 올릴 준비를 했어요"로 알린다.
 
-루트에 Dockerfile 1개뿐이고 서브디렉터리 Dockerfile 도 없으면 → **단일서비스.** 매니페스트를 만들지 않고 현행대로 둔다.
+루트에 Dockerfile 1개뿐이고 서브디렉터리 Dockerfile 도 없고, 위 C 의 매니페스트가 한 디렉터리(또는 루트)에만 있으면 → **단일서비스.** 매니페스트를 만들지 않고 현행대로 둔다.
 
 ## 2. compose 를 구조 힌트로 읽기 (있을 때)
 `docker-compose.yml` 에서 각 서비스마다 뽑는다(배포엔 안 씀, 매니페스트 채우기용):

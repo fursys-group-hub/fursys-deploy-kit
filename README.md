@@ -54,6 +54,8 @@ npm test                    # vitest green 확인
 2. monorepo 루트에서 `node scripts/publish-kit.mjs --target <fursys-deploy-kit 클론경로> --push`
 3. 실무자는 `/plugin marketplace update fursys-deploy-hub`
 
+> **⚠️ 발행해도 설치된 플러그인은 자동 갱신되지 않는다(항목9).** `publish-kit.mjs --push` 로 마켓플레이스 repo 에 새 버전을 올려도, **이미 `/plugin install` 한 환경(사장님 포함)은 옛 버전을 그대로 쓴다** — Claude Code 가 플러그인을 자동 업데이트하지 않기 때문이다. 새 동작(엔진 보강·SKILL 변경 등)을 반영하려면 **각 사용 환경에서 반드시 `/plugin marketplace update fursys-deploy-hub` 를 한 번 실행**해야 한다(그 뒤 필요하면 `/plugin install ...@... ` 로 재설치). 증상: "고쳤다는데 왜 예전처럼 동작하지?" = 십중팔구 마켓플레이스 update 미실행. 발행 안내 시 이 한 줄을 사용자에게 함께 전한다: **"새 버전을 쓰려면 `/plugin marketplace update fursys-deploy-hub` 를 한 번 실행해 주세요."**
+
 > **Windows 주의(알려진 점검 항목)**: 플러그인 `bin/` 의 PATH 등록(shim)이 Windows 에서 불안정할 수 있다. `fdh-engine` 이 bare 명령으로 동작하지 않으면 폴백으로 `node <bin 경로>/fdh-engine` 형태로 직접 실행한다.
 
 ## 비밀 취급

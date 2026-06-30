@@ -65,6 +65,7 @@ test -f Dockerfile && echo OK || echo NO_DOCKERFILE
 - **주소 앞부분 — repo 이름을 기본값으로 추천하고 확인받는다:** ①에서 확인한 repo(`fursys-group-hub/<레포이름>`)의 **`<레포이름>` 을 그대로(쪼개지 말고) 주소 앞부분 기본값으로 제안**한다. 예: repo `cataloglens` → 앞부분 `cataloglens`, repo `nps-dashboard` → 앞부분 `nps-dashboard`. ⚠️ **`-` 로 잘라 `nps` 로 줄이지 말 것 — repo 이름 전체를 그대로 쓴다.** "접속 주소 앞부분은 `<레포이름>` 으로 할게요. 다른 걸 원하시면 한 단어로 알려주세요." 처럼 **추천값을 보여주고**, 사용자가 그대로면 그 값을, 바꾸면 입력값을 쓴다(자유 변경 가능). **후보 메뉴(`AskUserQuestion`)를 여러 개 만들지 말 것 — 기본은 repo 이름 1개 추천 + 자유 변경이다.** 최종 주소는 **`https://{앞부분}.group.hub.fursys.com`** 이다(모든 앱이 group 공간). 예: 앞부분 `cataloglens` → **`cataloglens.group.hub.fursys.com`**. ⚠️ **`.fursys.com` 으로 끝나면 틀린 것**(반드시 `.group.hub.fursys.com`). **확정 주소를 그대로 보여주고 확인**받는다. "서브도메인"이라는 말은 쓰지 않는다.
 - **중복 주소 차단(중복 앱 사고 방지):** 같은 앞부분으로 이미 올라간 앱이 있으면 서버가 자동으로 가려낸다(존재하면 새로 만들지 않고 git push 재배포로 안내 — ⑦의 `REDEPLOY_WEBHOOK`). 그러니 별도 목록 조회 없이 진행하되, 사용자가 "이미 올렸던 것 같다"고 하면 같은 앞부분을 그대로 써서 재배포 경로로 자연히 수렴하게 둔다.
   - (참고) 기존에 브랜드별 주소(`…{브랜드}.hub.fursys.com`)로 올라간 앱은 그대로 살아 있다. 같은 앞부분이라도 group 주소와는 별개라 충돌하지 않는다. 사용자가 옛 주소를 찾으면 그 주소로 안내한다.
+  - **같은 repo 를 여러 주소로 올리고 싶을 때(드묾):** 사용자가 "같은 프로젝트인데 **주소만 다르게 따로** 하나 더 올리고 싶다"고 명확히 하면(예: 같은 코드의 두 번째 인스턴스), `deploy.sh` 에 **`--app <키>`** 를 붙여 부른다(키 = 그 주소를 가리키는 한 단어, 보통 주소 앞부분과 동일하게). 안 붙이면 같은 repo 의 두 번째 주소가 첫 앱으로 수렴해 새 주소가 안 만들어진다. **이건 사용자가 명시적으로 "따로 하나 더"라고 할 때만** 쓴다 — 평소(한 repo = 한 주소)엔 붙이지 않는다(현행 그대로).
 
 ## ③-1 여러 부분으로 나뉜 앱인지 확인 (멀티서비스 — 있을 때만)
 프로젝트 루트에 `.fursys-deploy-hub/services.json`(여러 부분으로 올라가는 앱의 목록)이 있는지 본다.
@@ -103,10 +104,24 @@ test -f .fursys-deploy-hub/services.json && echo HAS_MANIFEST || echo NO_MANIFES
 **① 커밋/푸시가 이 단계보다 먼저 끝나 있다(중요).** 그러므로 여기서 `COMMIT`/`HEAD_TREE` 는 **실제 배포될 커밋(현재 HEAD)** 기준이다.
 ```bash
 COMMIT=$(git rev-parse HEAD 2>/dev/null || echo null)
-# 배포할 커밋(① 커밋 후의 HEAD)의 트리 해시 = push 로 GitHub·Coolify 가 당겨 배포하는 그 내용.
-HEAD_TREE=$(git rev-parse 'HEAD^{tree}' 2>/dev/null || echo null)
+# (treegate) 비교 트리는 검토측(security-review)이 tree 를 산출할 때와 **동일한 방식**(_fdh_tree)으로 만든다.
+#  배경: HEAD^{tree} 를 그대로 쓰면, 대상 repo 에 .gitattributes 가 없고 Windows autocrlf 면
+#  HEAD 의 blob(CRLF)과 검토측의 git add -A 재정규화(LF) blob 이 달라 tree 가 **항상 불일치** →
+#  내용 무변경인데도 게이트가 "코드 변경"으로 오판·차단한다(§6.1.1, CRLF 노이즈). 양쪽을 같은
+#  명령으로 통과시키면 정규화가 동일하게 적용돼 CRLF 차가 상쇄되고, 진짜 내용 변경은 여전히 잡힌다.
+_fdh_tree() {
+  local idx; idx="$(mktemp -t fdhidx.XXXXXX 2>/dev/null || echo "$(git rev-parse --git-dir)/fdh-tmpidx.$$")"
+  rm -f "$idx"
+  GIT_INDEX_FILE="$idx" git add -A 2>/dev/null
+  GIT_INDEX_FILE="$idx" git write-tree 2>/dev/null
+  rm -f "$idx"
+}
+HEAD_TREE="$(_fdh_tree)"   # 검토측 tree 와 동일 규약(작업트리 내용·정규화 일치). 실패 시 빈 문자열.
+[ -z "$HEAD_TREE" ] && HEAD_TREE=$(git rev-parse 'HEAD^{tree}' 2>/dev/null || echo null)  # 폴백(git 비정상)
 test -f .fursys-deploy-hub/last-verdict.json && cat .fursys-deploy-hub/last-verdict.json || echo NO_VERDICT
 ```
+> 💡 **대상 repo 권장 설정:** 줄바꿈 노이즈를 원천 차단하려면 대상 repo 에 `.gitattributes`(`* text=auto`)를 두는 게 가장 깔끔하다(저장소 blob 을 LF 로 정규화 → 어떤 OS 에서 체크아웃해도 tree 일관). 위 `_fdh_tree` 동일규약 비교는 그게 없어도 게이트 오판을 막는 2차 안전판이다.
+
 판정 순서(treegate — 위에서 아래로 처음 맞는 것 적용):
 1. **파일이 없으면(NO_VERDICT)** → "먼저 **'배포 전 검토 해줘'**(또는 `/deploy-check`) 를 실행해 통과해야 배포할 수 있어요. 보안과 배포 준비를 점검해 리포트로 알려드려요." 안내하고 **여기서 멈춘다(배포 스크립트 호출 안 함).**
 2. **`final` 이 `"ok"` 가 아니면** → "아직 통과가 아니에요(보안 차단 또는 배포 준비 미완). 리포트의 복붙 수정 프롬프트로 고친 뒤 **배포 전 검토를 다시 실행**해주세요." **멈춘다.**
@@ -151,10 +166,17 @@ PORT="$(grep -iE '^EXPOSE' Dockerfile 2>/dev/null | grep -oE '[0-9]+' | head -1)
 VOL="$(grep -oE '"volumes_plan"[[:space:]]*:[[:space:]]*\[[^]]*\]' .fursys-deploy-hub/last-verdict.json 2>/dev/null | sed -E 's/.*:[[:space:]]*(\[[^]]*\]).*/\1/')"
 VOL_FLAG=()
 case "$VOL" in ''|'[]') : ;; *) VOL_FLAG=(--volumes "$VOL") ;; esac
-# env_json 은 stdin 으로 전달(시크릿이 인자에 안 남게). 없으면 stdin 비우고 인자만.
-printf '%s' "$ENV_JSON" | "$CLAUDE_PLUGIN_ROOT/skills/deploy/scripts/deploy.sh" \
-  "fursys-group-hub/<REPO>" "<COMMIT>" "group-hub" "<주소앞부분>" "${PORT:-3000}" "" "${VOL_FLAG[@]}"
+# env_json 은 **임시파일(--env-file)** 로 전달한다 — 시크릿이 인자(argv)·프로세스 목록에 안 남고,
+# Windows(Git Bash) 에서 `printf | deploy.sh` stdin 파이프가 간헐적으로 exit 1·빈출력으로 깨지는
+# 문제도 우회한다(파일은 파이프와 달리 EOF 레이스가 없다). deploy.sh 가 읽은 즉시 그 파일을 삭제한다.
+ENV_TMP="$(mktemp -t fdhenv.XXXXXX 2>/dev/null || echo "${TMPDIR:-/tmp}/fdhenv.$$")"
+( umask 077; printf '%s' "$ENV_JSON" > "$ENV_TMP" )   # 0600 으로 생성(시크릿 보호)
+"$CLAUDE_PLUGIN_ROOT/skills/deploy/scripts/deploy.sh" \
+  "fursys-group-hub/<REPO>" "<COMMIT>" "group-hub" "<주소앞부분>" "${PORT:-3000}" "" \
+  --env-file "$ENV_TMP" "${VOL_FLAG[@]}"
+rm -f "$ENV_TMP" 2>/dev/null || true   # deploy.sh 가 이미 지우지만 폴백으로 한 번 더(빈 ENV_JSON 등)
 ```
+- `ENV_JSON` 이 비어 있어도 위 방식은 안전하다(빈 파일 → deploy.sh 가 인자/stdin 폴백). `--env-file` 경로가 안 읽히면 deploy.sh 는 `ENV_FILE_UNREADABLE`(stderr)만 찍고 인자/stdin 값으로 폴백한다.
 - `<COMMIT>` 은 ⑤에서 계산한 `$COMMIT`(`git rev-parse HEAD`) 값을 넣는다. **반드시 포함**한다 — 서버 게이트가 GitHub 브랜치 HEAD를 직접 해석하지 못하는 경우(폴백) 이 값으로 검토 통과 여부를 조회하므로, 빠지면 통과한 코드도 배포가 거부된다.
 - **포트는 반드시 전달**한다(5번째 인자). Dockerfile `EXPOSE` 로 자동 결정하며, 빠지면 서버가 3000으로 잡아 **vite·fastapi 가 502** 로 깨진다.
 - **단일 서비스 영속 볼륨(데이터 보존):** `last-verdict.json` 의 `volumes_plan`(검토가 SQLite·업로드 디렉터리 등을 감지해 적어 둔 컨테이너 경로 목록)이 있으면 위처럼 `--volumes '["/data", ...]'` 로 함께 보낸다. 그러면 서버가 그 경로에 저장 공간을 마련해 **재배포해도 데이터(예: 데이터베이스 파일)가 사라지지 않는다.** 사용자에겐 쉬운 말로만 알린다: "이 앱은 자료(예: 데이터베이스 파일)를 저장하니, 재배포해도 안 사라지게 **저장 공간을 함께 마련**했어요." `volumes_plan` 이 없거나 비어 있으면 이 플래그를 보내지 않는다(현행과 동일). (멀티서비스는 이 필드를 보지 않고 `services.json` 의 `volumes` 를 쓴다 — `references/multiservice.md`.)
@@ -190,8 +212,8 @@ printf '%s' "$ENV_JSON" | "$CLAUDE_PLUGIN_ROOT/skills/deploy/scripts/deploy.sh" 
 - **상한:** 누적 대기 **약 10분**까지만 반복한다. 상한까지 terminal(`RUNNING`/`FAILED`) 에 못 닿으면 그때만 미결 안내: "**빌드가 좀 오래 걸리네요.** 잠시 후 '내 앱 보여줘'(`/my-apps`)로 상태를 확인해 주세요." (앱은 이미 만들어졌다 — **절대 다시 만들지 않는다·`/deploy` 를 또 부르지 않는다.**)
 - **중복 생성 가드(불변):** `CREATED`/`REDEPLOYED` 를 받은 그 서비스는 **"이미 만들어진 것"** 이다. 폴링이 도중에 끊기거나 미결로 끝나도 **다른 방식·다른 app_id 로 다시 만들지 않고, deploy.sh 를 재호출(재-POST)하지 않는다.** 빌드가 의심되면 재배포가 아니라 `logs.sh`(⑨)로 원인을 확인한다.
 
-- **`REDEPLOY_WEBHOOK <app_id> <domain>`**: **이미 올라가 있는 본인 앱이에요. 서버에서 다시 올리지 않았어요(중복으로 올리는 걸 막았어요).** **이 경우는 ⑦-1 폴링을 하지 않는다**(서버가 deploy 를 안 한 경로 — git push webhook 이 자동 재배포한다). 사용자에겐 이렇게 안내한다:
-  > "이미 올라가 있는 앱이에요. **중복으로 올리는 걸 막았어요(같은 걸 두 번 올리지 않아요).** 방금 하신 코드 저장(`git push`)으로 **자동으로 다시 올라가요.** 잠시 후 이 주소로 확인해 주세요: `domain`"
+- **`REDEPLOY_WEBHOOK <app_id> <domain>`**: **이미 올라가 있는 본인 앱이에요. 서버에서 다시 올리지 않았어요(중복으로 올리는 걸 막았어요).** **이 경우는 ⑦-1 폴링을 하지 않는다**(서버가 deploy 를 안 한 경로 — git push webhook 이 자동 재배포한다). **`<domain>` 을 사용자에게 보여줄 땐 반드시 `https://` 로 정규화한다**(항목37 — proxy 가 돌려주는 `<domain>` 은 `http://` 스킴이라 그대로 노출하면 502 가 난다. `https://<domain 에서 스킴 제거>` 로 바꿔 안내). 사용자에겐 이렇게 안내한다:
+  > "이미 올라가 있는 앱이에요. **중복으로 올리는 걸 막았어요(같은 걸 두 번 올리지 않아요).** 방금 하신 코드 저장(`git push`)으로 **자동으로 다시 올라가요.** 잠시 후 이 주소로 확인해 주세요: `https://<domain>`"
   - **여기서 반드시 핵심 원칙을 한 번 더 전한다:** "**이 배포 명령은 처음 한 번만 쓰면 돼요. 그 다음부터는 코드를 고친 뒤 저장(`git push`)만 하면 자동으로 다시 올라갑니다. 배포 명령을 또 누르지 마세요.**"
   - (내부) 200 응답의 `status:"unchanged"` + `deploy_triggered:false` + `redeploy_via:"webhook"` 경로다. 서버가 이중배포를 막았으므로 **상태 폴링을 하지 않는다.**
 - **`REDEPLOYED <app_id> <domain>`**: **앱이 사라져 있어 같은 이름으로 다시 만들었어요**(자가복구). 처리는 `CREATED` 와 **완전히 동일** — 곧바로 **⑦-1 종결 폴링 루프**로 들어가 `RUNNING`/`FAILED` 까지 따라간다(`FAILED` 면 ⑨로). 사용자에겐 쉬운 말로만 안내한다:

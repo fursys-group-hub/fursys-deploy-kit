@@ -15,6 +15,11 @@ set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=common.sh
 . "$HERE/common.sh"
+# common.sh 가 'set -euo pipefail' 로 errexit 를 켜므로, 이 스크립트의 선언 모드(set -uo, errexit 미사용)를
+# 복원한다(deploy.sh 와 동일). 안 그러면 errexit 가 새어 들어와, 의도적으로 실패를 허용하는 줄(curl·grep·sed
+# 의 '|| true' 가드)이 파이프 중간 실패로 조기 종료될 수 있다. 이 스크립트는 rc·분기로 직접 제어하므로
+# errexit 를 끈다(주석상 'set -e 로 안 죽게'라 믿던 잠복 누출 차단 — 라운드3 항목18 후속).
+set +e
 
 APP_ID="${1:-}"
 if [ -z "$APP_ID" ]; then

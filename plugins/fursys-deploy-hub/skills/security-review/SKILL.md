@@ -22,11 +22,16 @@ description: 배포 전 검토 — 보안 + 배포 가능성 두 축을 점검�
 ## 2) 엔진 실행 (0토큰, 네트워크/LLM 없음) — 시크릿/git/framework/env의 단일 소스
 ```bash
 mkdir -p .fursys-deploy-hub
-fdh-engine "<대상경로>" --json --no-prompt > .fursys-deploy-hub/_engine.json
+fdh-engine "<대상경로>" --json --no-prompt > .fursys-deploy-hub/_engine.json 2>/dev/null
+# 저장 직후 유효 JSON 인지 즉시 검증한다 — 오염되면 멈춘다(빈 파일/혼재 방지).
+node -e 'JSON.parse(require("fs").readFileSync(".fursys-deploy-hub/_engine.json","utf8"))' \
+  && echo ENGINE_JSON_OK || echo ENGINE_JSON_INVALID
 ```
 - `fdh-engine` 은 이 플러그인 `bin/` 에 번들된 단일 실행 파일로, 플러그인 활성화 시 PATH에 자동 등록된다(별도 설치 불필요).
-- 결과 JSON 을 `.fursys-deploy-hub/_engine.json` 에 저장한다(`contracts/security-verdict.schema.json` 형식). 이 파일을 읽어 해석하고, **나중에 `/deploy`(⑤-1) 등록 때 빌더가 이 파일을 그대로 다시 써서 본문을 만든다(손 조립 방지).** stderr는 로그.
-- exit code: 0=pass, 1=caution, 2=blocked.
+- **stdout 은 엔진 verdict JSON 만, 로그·진단([engine] …)은 stderr 다.** 저장 명령은 stdout 만 파일로 받고 **stderr 는 `2>/dev/null` 로 버린다** — `_engine.json` 에 로그가 섞여 invalid JSON 이 되면 verdict-build·plan-summary 가 `ENGINE_PARSE_FAIL` 로 깨지기 때문이다(sofa·sidiz·mbom 에서 관측). 저장 직후 `JSON.parse` 1회로 무결성을 즉시 확인한다.
+- `ENGINE_JSON_INVALID` 가 나오면 **그 사실을 알리고 멈춘다**(오염된 파일로 등록·자동수정을 진행하지 않는다). PATH 미해결 등으로 엔진 대신 다른 출력이 섞였을 수 있다.
+- 결과 JSON 을 `.fursys-deploy-hub/_engine.json` 에 저장한다(`contracts/security-verdict.schema.json` 형식). 이 파일을 읽어 해석하고, **나중에 `/deploy`(⑤-1) 등록 때 빌더가 이 파일을 그대로 다시 써서 본문을 만든다(손 조립 방지).**
+- exit code: 0=pass, 1=caution, 2=blocked. (`2>/dev/null` 은 exit code 에 영향 없다.)
 - **엔진이 안 돌면 그 사실을 알리고 멈춘다(임의 판단 금지).**
 
 ### verdict JSON 구조 (이 필드만 쓴다)
@@ -44,7 +49,7 @@ fdh-engine "<대상경로>" --json --no-prompt > .fursys-deploy-hub/_engine.json
 
 ## 3) 🔒 보안 심화 (엔진 결과 + LLM 코드 점검)
 엔진의 시크릿/git findings를 **출발점**으로, 그 위에 LLM이 코드를 읽어 보안 실수를 더한다.
-1. `references/owasp-checklist.md` 로 **OWASP 배포 시점 14항목**을 점검한다(DEBUG, CORS `*`, Spring permitAll, HTTPS 미강제, 평문 비밀번호, SQL injection, 의존성, 디버그 엔드포인트, 인증 미보호, 로그 시크릿, 파일 업로드, SSRF, XSS, Streamlit 설정).
+1. `references/owasp-checklist.md` 로 **OWASP 배포 시점 15항목**을 점검한다(DEBUG, CORS `*`, Spring permitAll, HTTPS 미강제, 평문 비밀번호, SQL injection, 의존성, 디버그 엔드포인트, 인증 미보호, 로그 시크릿, 파일 업로드, SSRF, XSS, Streamlit 설정, 정적 서빙 루트가 서버 폴더 전체).
 2. `references/framework-rules.md` 에서 **엔진이 감지한 프레임워크(`target.framework`) 섹션의 ① 보안 점검** 부분만 읽어 점검한다(unknown이면 공통 Dockerfile 점검만).
 3. 오탐 가이드(owasp-checklist §3) 적용: 예시/테스트/주석/placeholder는 "추정"으로 표기.
 - **보안 축 판정:** 엔진 verdict를 기준으로 하되, LLM 심화에서 **치명 추가 → 차단**, **높음 추가 → 주의** 로 **상향만** 한다(하향 금지). 결과는 통과 / 주의 / 차단 중 하나.
@@ -111,12 +116,24 @@ ls -1 docker-compose.yml compose.yaml 2>/dev/null  # compose 있나(구조 힌�
     "env_plan": [
       { "name": "<설정값 이름>", "class": "build|runtime|locked", "note": "fgdw|secret-gen|ask|public-url|''", "scope": "container|local" }
     ],
-    "volumes_plan": ["<감지한 영속 볼륨 컨테이너 디렉터리, 예 /data>"]
+    "volumes_plan": ["<감지한 영속 볼륨 컨테이너 디렉터리, 예 /data>"],
+    "deploy_fixes": [
+      { "type": "copy-public|port|start-cmd|dockerfile|streamlit-config|next-build-env|volume-perm|secrets-to-env|static-folder|sec-llm", "severity": "critical|high", "file": "<관련 파일, 없으면 null>", "message": "<쉬운 우리말 한 줄 — 무엇이 문제인지>", "aiPrompt": "<그대로 붙여 고칠 수 있는 수정 지침. 자동수정 불가면 null>" }
+    ]
   }
   ```
   - `security` = 보안 축 결과(통과=`pass`/주의=`caution`/차단=`blocked`), `deployable` = 배포가능 축(가능=`true`/불가=`false`).
   - **`tree`(treegate) = 위 `_fdh_tree` 로 산출한 검증 작업트리의 git 트리 해시(40자 hex), 없으면 `null`.** 이게 deploy ⑤ 게이트의 **1순위 기준**이다 — deploy-fix 가 커밋 안 한 채 deploy ①이 커밋해 commit SHA 가 바뀌어도, 내용이 같으면 tree 가 같아 통과한다(SHA 무효화 루프 제거). 없으면(옛 형식·git 아님) deploy 가 `commit` 비교로 폴백(하위호환). board 미업로드(로컬 게이트 전용). `commit` 은 현행대로 유지(참고·폴백용).
   - **`volumes_plan` = 4)·5의 영속 볼륨 감지(deploy-readiness §4-1) 결과** — 단일 서비스에서 SQLite·업로드 디렉터리 등을 감지하면 그 **상위 디렉터리** 경로를 배열로 적는다(예: `["/data"]`). deploy 가 이 값을 `--volumes` 로 전달해 재배포해도 데이터가 보존된다. **감지된 게 없으면 이 필드를 생략하거나 `[]`** 로 둔다(볼륨 미요청 — 현행 동일). board 에 업로드되지 않는 로컬 전용 필드다(게이트·verdict shape 불변). 멀티서비스는 이 필드를 쓰지 않고 `services.json` 의 `volumes` 를 쓴다.
+  - **`deploy_fixes`(deployfix2 — 선택, 하위호환) = "리포트가 'deploy-fix 가 고쳐줘요'라고 안내하는데 `_engine.json` 엔진 finding 에는 없는, 자동수정 가능한 문제"의 기계 판독용 목록**이다. 두 출처를 모두 담는다: **① 4)·4-1 배포가능성 점검에서 발견한 🚀 배포 준비 문제**, **② 3) 보안 심화에서 LLM 이 코드를 읽어 발견했는데 엔진이 못 잡은 🔒 보안 문제(`sec-llm`)**. 리포트의 `DEPLOY_PROMPTS`/보안 수정 프롬프트와 **같은 문제를 기계가 읽을 형태로** 적는다 — deploy-fix(모드 A)가 이 목록을 읽어 `aiPrompt` 대로 코드를 직접 고친다(리포트가 "고쳐줘요"라 안내하는데 실제로 안 고치던 **계약갭**을 메운다). **`_engine.json` 의 finding shape 은 건드리지 않는다**(엔진은 시크릿/git/framework/env 만 결정적 처리 — 배포가능성·LLM 심화 보안은 LLM/Bash 가 보는 것이라 엔진 finding 이 아니다. 그래서 별도 채널인 이 필드로 둔다). 기록 규칙:
+    - **자동수정 가능한 배포준비 문제만 담는다.** `type` 은 deploy-failure-playbook 유형 키와 정렬한다: `copy-public`(public 폴더 없음 → 빈 `public/.gitkeep` 생성)·`port`(EXPOSE↔실제 포트 불일치)·`start-cmd`(CMD/ENTRYPOINT 없음)·`next-build-env`(빌드 단계 `NODE_ENV=production`/`NEXT_PUBLIC_*` ARG 누락)·`volume-perm`(non-root 볼륨 경로 mkdir+chown 누락)·`streamlit-config`(`.streamlit/config.toml` 표준 설정 누락 — 텔레메트리 off·포트 등)·`dockerfile`(Dockerfile 은 있으나 한 단계가 잘못). 각 항목에 **그대로 붙여 고칠 수 있는 `aiPrompt`** 를 적는다(리포트 `DEPLOY_PROMPTS` 와 동일 내용 — 한 번만 쓰고 양쪽에 재사용).
+    - **(plan-empty 갭) LLM 심화 보안 발견은 `type:"sec-llm"` 로 여기 담는다.** 3) 보안 심화(OWASP·프레임워크·코드 점검)에서 **LLM 이 직접 잡았는데 엔진이 `_engine.json` finding 으로 못 잡은** 보안 문제(예: 소스에 박힌 개인계정 평문·DEBUG=True·CORS `*`·permitAll 등)는, 코드만 고쳐 끝낼 수 있고 그대로 붙일 `aiPrompt` 가 있으면 `type:"sec-llm"` 항목으로 적는다. **배경:** 엔진 finding 이 비면(`findings:[]`) deploy-fix 의 plan-summary 가 자동수정 대상을 못 찾아 `PLAN_EMPTY`(자동수정 없음)로 오판하던 갭을 메운다 — 이제 `_engine.json`(엔진 시크릿/git)과 **같은 자동수정 파이프라인**으로 LLM 심화 보안도 처리된다. **단, 엔진이 이미 잡은 finding 을 여기 중복 기재하지 않는다**(이중 자동수정 방지 — `_engine.json` 에 있는 건 거기 것이 정본). `inGitHistory`(과거 기록 유출)·키 폐기 필요 같은 **코드 수정만으로 끝나지 않는 것은 `aiPrompt:null`**(안내만 — plan-summary 가 manual 로 분류). 보안 verdict 자체(통과/주의/차단)는 종전대로 3)의 상향 규칙으로 판정한다 — `deploy_fixes` 기재는 verdict 와 별개의 "자동수정 입력"일 뿐이다.
+    - **자동수정 불가는 담지 않거나 `aiPrompt:null` 로 둔다(안내만).** ① **Dockerfile 자체 부재**(프레임워크 표준을 통째로 새로 작성 — 위험·범위 큼)는 `type:"dockerfile"`·`aiPrompt`=프레임워크별 표준 Dockerfile 생성 지침을 담을 수 있으면 담고, 판단이 애매하면 `aiPrompt:null`(리포트의 안내로만). ② **필수 설정값 누락(`note:"ask"`·관리자 비번·외부 자격증명)** 은 `deploy_fixes` 에 넣지 않는다 — 그건 `env_plan` 이 다루고 사람이 정할 값이다(deploy-fix 도 제외).
+    - **(소스 최소 변경 원칙 — 항목13/25/35) `aiPrompt` 를 적을 때 "사용자 코드를 최소로 건드리는" 수정을 1순위로 적는다.** 같은 문제를 ① **코드 변경 없이 env·설정파일(`.streamlit/config.toml` 등)·Dockerfile 로** 풀 수 있으면 그 경로를, ② 코드 변경이 불가피하면 **diff 최소(한두 줄·비침투적)** 인 경로를 `aiPrompt` 에 담는다. 코드를 뜯어고치는 침투적 수정은 마지막 수단이며, 그럴 땐 `message` 에 **"코드를 일부 바꿔야 해요(범위: 어디·왜)"** 를 명시한다(deploy-fix 가 사용자에게 그대로 안내). 유형별:
+      - **`secrets-to-env`(항목25 — Streamlit `st.secrets` → `os.environ`):** 사내 서버는 `secrets.toml` 을 직접 지원하지 않아 `st.secrets["X"]` 가 런타임 KeyError 로 깨진다. 그러나 `st.secrets`→`os.environ` 으로 **코드를 통째로 바꾸면 로컬 `secrets.toml` 흐름이 파괴**된다. **`aiPrompt` 는 비침투적 경로를 1순위로 적는다:** 앱 진입부(예 `app.py` 상단)에 **`from dotenv import load_dotenv; load_dotenv()` 한 줄** + 기존 `st.secrets["X"]` 호출을 `st.secrets.get("X", os.environ.get("X"))` 형태로 **폴백만 추가**(secrets.toml 있으면 그대로, 없으면 env). 이렇게 하면 로컬(secrets.toml)·사내 서버(env) 둘 다 동작한다. **함께 생성할 것:** 프로젝트 루트 `.env.example`(코드가 참조하는 키만 빈 값으로) + 로컬 실행 안내(`README`/주석 한 줄: "로컬은 `.streamlit/secrets.toml` 또는 `.env`, 사내 서버는 배포 설정값으로 주입"). `message` 예: "사내 서버에서 비밀값을 읽도록 설정값(env) 폴백을 더했어요 — 로컬 `secrets.toml` 실행은 그대로 동작해요." `severity:"high"`(미수정 시 런타임 깨짐).
+      - **`static-folder`(항목35 — Flask/FastAPI/Express 정적 서빙 루트가 서버 폴더 전체):** `Flask(__name__, static_folder=".")`·`StaticFiles(directory=".")`·`express.static(".")` 처럼 서버 루트 전체(소스·`.env`·설정)가 URL 로 노출되는 경우. **코드를 직접 뜯어고치기보다(침투적) 최소 수정 + 사용자 안내가 1순위:** `aiPrompt` 는 **정적 폴더 인자만 안전한 전용 폴더로 좁히는 한 줄 변경**(`static_folder="static"`·`directory="static"`·`express.static("public")`)을 담고, 그 전용 폴더(`static/`·`public/`)가 없으면 함께 만들도록 적는다(빈 `.gitkeep` 포함). **공개 자산이 실제로 루트에 흩어져 있어 폴더 이동이 필요한 경우처럼 코드 변경이 더 커지면**, `message` 에 "공개로 둘 파일만 `static/` 으로 옮겨야 해요(범위)"를 명시하고, 자동으로 파일을 옮기지 말고 **안내만**(`aiPrompt:null`)한다 — 어떤 파일이 공개여야 하는지는 사람 판단. `severity:"high"`.
+    - **`severity`** 는 `critical`(배포 자체 불가 — Dockerfile 부재 등) 또는 `high`(빌드/기동 깨짐·서버 폴더 노출 등). 배포를 막지 않는 권고(HEALTHCHECK 낮음 등)는 담지 않는다.
+    - **발견된 게 없으면(배포 준비 통과) 이 필드를 생략하거나 `[]`** 로 둔다(현행 동일). board 미업로드(로컬 `last-verdict.json` 전용 — 게이트·verdict shape 불변). 멀티서비스는 services 별 자동수정을 이 필드로 다루지 않는다(현행 유지).
   - **`env_plan` = 엔진 `envVars`(name·class) + 4)·심화에서 파악한 처리 메모.** 배포 단계가 코드를 다시 안 뒤지도록 **여기서 미리 채운다**(속도). `note` 규칙: fgdw 계정/비번=`fgdw`(배포 시 공용계정 자동치환), 난수 자동생성 대상(JWT_SECRET 등)=`secret-gen`, 사람이 정할 값/외부 자격증명=`ask`, NEXT_PUBLIC_*·VITE_* 공개주소=`public-url`, 그 외 일반값=`''`. 분류 기준은 `references/env-resolve.md`(deploy 와 동일 규칙)와 owasp/framework 점검 결과를 그대로 반영한다.
   - **`scope` = 4)에서 `deploy-readiness.md §8`(Dockerfile COPY 앵커)로 판정한 결과를 각 항목에 적는다.** 컨테이너 안(빌드+런타임)에서 쓰이면 `"container"`, 배포 컨테이너에 안 들어가는 코드(로컬 ETL·갱신 스크립트, 예 `scripts/fgdw/*.cjs`·`refresh.ps1`)만 쓰면 `"local"`. **기본값은 `container`** — 판정이 불확실하거나 §8 절차를 적용 안 했으면 `"container"` 로 두거나 생략한다(생략 = container, 하위호환). `scope` 는 `class`/`note` 와 직교다(class/note 는 컨테이너 안 처리 방식, scope 는 컨테이너 안/밖). **보수적 편향:** 런타임/빌드 env 를 `local` 로 오판하면 앱이 크래시(치명)하므로, `"local"` 은 Dockerfile 상 컨테이너 밖임이 확실할 때만. **`VITE_*`/`NEXT_PUBLIC_*` 는 빌드타임이라 항상 `container`**(local 금지 — 빌드 깨짐).
   - `branch` 도 함께 적어, deploy 가 브랜치를 재확인하지 않게 한다(deploy.sh 가 자체 해석도 하지만 기록을 남긴다).
@@ -159,7 +176,43 @@ ls -1 docker-compose.yml compose.yaml 2>/dev/null  # compose 있나(구조 힌�
 - `SECURITY_PROMPTS` — `aiPrompt` 있는 치명/높음마다 블록. **고정 안내문은 템플릿이 아니라 여기 본문에 직접 넣는다**(verbatim): 제목 `### {심각도} · {짧은 제목}` + 한 줄 `아래 글을 그대로 복사해 AI 도구에 붙여넣으면 이 문제를 고쳐줍니다.` + 코드블록(```) 안에 `aiPrompt` 전문. 없으면 이 블록은 비운다(구분선만).
 - `DEPLOY_CHECK_ROWS` — Dockerfile/포트/시작 방법/필수 설정값/상태점검 **표 행**. `| 점검 항목 | 결과 | 설명 |` 순서. 결과는 `✅`(통과)·`❌`(문제, 배포 막음)·`➖`(권장). 예: `| Dockerfile | ✅ | 배포에 쓸 Dockerfile이 있어요. |`.
 - `DEPLOY_PROMPTS` — 배포 준비 문제 시 복붙 프롬프트 블록(`SECURITY_PROMPTS` 와 동일 형식). 없으면 비운다.
-- `ENV_ROWS` — 설정값 정리 **표 행**. `| 설정값 이름 | 다루는 방법 | 설명 |` 순서. 다루는 방법은 한글로(영어 분류명 노출 금지): `build`→`화면(브라우저)에 포함될 수 있음 → 비밀번호·키 넣지 말 것`, `runtime`→`서버에서만 쓰는 일반 값`, `locked`→`비밀번호·키 → 안전하게 잠가서 보관(화면 노출 금지)`. 예: `| \`DATABASE_URL\` | 비밀번호·키 → 안전하게 잠가서 보관(화면 노출 금지) | 데이터베이스 접속 정보 |`.
+- `ENV_ROWS` — 설정값 정리 **표 행**.
+
+**값파일 형식 예시(추측 금지 — 그대로 따라 쓴다).** `_render-values.txt` 는 아래처럼 각 KEY 를 `@@@FDH:KEY@@@` 한 줄로 열고, 다음 KEY 구분선 전까지가 그 KEY 의 값(여러 줄·마크다운 가능). 문제 없는 `*_PROMPTS` 도 **구분선은 남기고 내용만 비운다**(구분선을 빼면 `{{KEY}}` 가 리포트에 그대로 노출). `SECURITY_PROMPTS` 와 `DEPLOY_PROMPTS` 는 **동일 형식**(제목 `### {심각도} · {짧은 제목}` + 안내 한 줄 + ```` ``` ```` 코드블록 안 프롬프트 전문):
+```
+@@@FDH:META_LIST@@@
+- **대상 폴더:** `D:\...\my-app`
+- **코드 저장소:** fursys-group-hub/my-app
+- **프로젝트 종류:** Streamlit
+- **검사 일시:** 2026-06-29 14:30
+@@@FDH:SECURITY_BADGE@@@
+통과 ✅
+@@@FDH:DEPLOY_BADGE@@@
+불가 ❌
+@@@FDH:FINAL_LINE@@@
+❌ 배포 불가 — 시작 명령(CMD)이 없어요
+@@@FDH:SUMMARY_LINE@@@
+치명 0 · 높음 0 · 중간 1 · 낮음 0
+@@@FDH:SECURITY_FINDINGS_ROWS@@@
+| ➖ | - | - | 발견된 보안 문제가 없어요. |
+@@@FDH:SECURITY_PROMPTS@@@
+@@@FDH:DEPLOY_CHECK_ROWS@@@
+| Dockerfile | ✅ | 배포에 쓸 Dockerfile이 있어요. |
+| 시작 방법 | ❌ | 컨테이너를 시작하는 명령(CMD)이 없어요. |
+@@@FDH:DEPLOY_PROMPTS@@@
+### 중간 · 시작 명령(CMD) 추가
+아래 글을 그대로 복사해 AI 도구에 붙여넣으면 이 문제를 고쳐줍니다.
+```
+Dockerfile 마지막에 컨테이너 시작 명령을 추가해줘:
+CMD ["streamlit", "run", "app.py", "--server.port=8501", "--server.address=0.0.0.0"]
+EXPOSE 8501 도 함께 넣어줘.
+```
+@@@FDH:ENV_ROWS@@@
+| `DATABASE_URL` | 비밀번호·키 → 안전하게 잠가서 보관(화면 노출 금지) | 데이터베이스 접속 정보 |
+@@@FDH:END@@@
+```
+- 위에서 `SECURITY_PROMPTS` 는 보안 문제가 없어 **구분선만 두고 비웠다**(다음 줄이 바로 `@@@FDH:DEPLOY_CHECK_ROWS@@@`). 이렇게 비워야 빈 값으로 치환된다.
+- 프롬프트 본문의 ```` ``` ```` 코드펜스는 값 안에 그대로 넣는다(awk 가 구분선 `@@@FDH:` 줄만 키로 인식하므로 코드펜스는 값으로 안전하게 들어간다). `| 설정값 이름 | 다루는 방법 | 설명 |` 순서. 다루는 방법은 한글로(영어 분류명 노출 금지): `build`→`화면(브라우저)에 포함될 수 있음 → 비밀번호·키 넣지 말 것`, `runtime`→`서버에서만 쓰는 일반 값`, `locked`→`비밀번호·키 → 안전하게 잠가서 보관(화면 노출 금지)`. 예: `| \`DATABASE_URL\` | 비밀번호·키 → 안전하게 잠가서 보관(화면 노출 금지) | 데이터베이스 접속 정보 |`.
 
 **② 스크립트로 조립한다** — 출력은 대상 경로 하위 `.fursys-deploy-hub/security-report-<YYYYMMDD-HHMM>.md`.
 ```bash

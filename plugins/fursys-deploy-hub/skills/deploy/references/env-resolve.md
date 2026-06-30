@@ -7,7 +7,7 @@
 
 ## 1. 무엇이 필요한가 (키 목록 만들기)
 - 그 앱(서비스) 디렉토리의 `.env`/`.env.example` 키 + 코드가 참조하는 env 를 합친다.
-  - 코드 참조 키는 배포 전 검토(`/deploy-check`)의 엔진 결과(`envVars`)를 재활용한다. 없으면 그 서비스 dir 에서 `fdh-engine <dir> --json --no-prompt` 를 1회 돌려 `envVars` 를 얻는다.
+  - 코드 참조 키는 배포 전 검토(`/deploy-check`)의 엔진 결과(`envVars`)를 재활용한다. 없으면 그 서비스 dir 에서 `fdh-engine <dir> --json --no-prompt 2>/dev/null` 를 1회 돌려 `envVars` 를 얻는다(**stderr 는 버린다 — stdout 만 JSON, 로그가 섞이면 파싱 실패**).
 - **멀티서비스면 서비스 dir 단위**로 키 목록을 만든다(각 서비스가 쓰는 것만).
 - **`scope:"local"` 항목은 키 목록에서 제외한다.** `last-verdict.json` 의 `env_plan[].scope` 가 `"local"` 인 값은 배포 컨테이너에 안 들어가는 로컬 도구(ETL·갱신 스크립트) 전용이라 **묻지도·`env_vars` 에 넣지도 않는다**(`scope` 미지정/`"container"` 만 처리). 판정 근거는 security-review `deploy-readiness.md §8`(Dockerfile COPY 앵커).
 
@@ -31,8 +31,8 @@
   - **host/db/port 등 비자격증명** → 태그하지 않고 **사용자가 쓴 이름·값 그대로** 보낸다.
 - **키 이름은 표준으로 바꾸지 않는다(이번 규칙의 핵심).** 사용자의 `FGDW_DB_ID`·`DB_PW` 같은 비표준 이름을 그대로 둔 채 태그만 단다. proxy 가 태그를 보고 키 이름·값과 무관하게 `FGDW_SYS_USER`/`FGDW_SYS_PASSWORD` 로 덮는다.
 - **값은 빈 문자열 `""`** 로 보낸다(평문 비밀 미전송). proxy 가 어차피 시스템계정으로 덮으므로 원값은 무의미하다.
-- **비표준 이름이면 반드시 태그해야 치환된다.** 태그를 빠뜨리면 proxy 가 그 변수를 알아보지 못해 경고로 빠진다.
-- **하위호환(태그 강제 아님):** 표준 이름(`FGDW_DB_USER`/`FGDW_DB_PASSWORD`)이나 연결문자열(`Server=…;User Id=…;Password=…;`) 케이스는 태그를 안 달아도 proxy 폴백 경로가 알아서 치환한다. 비표준 이름일 때만 태깅이 필수.
+- **비표준 이름이면 태그하는 게 1차 방어다.** 태그를 달면 proxy 가 키 이름·값과 무관하게 결정적으로 치환한다 — **이것이 정상 경로다(반드시 태그할 것).**
+- **하위호환·서버 안전판(태그 강제 아님):** 표준 이름(`FGDW_DB_USER`/`FGDW_DB_PASSWORD`)·연결문자열(`Server=…;User Id=…;Password=…;` 또는 `scheme://user:pass@host`)은 태그 없이도 proxy 폴백이 치환한다. 또한 **비표준 분리키**(예 `SQLSERVER_USER`/`DB_PW`)라도, 같은 set 에 fgdw host(`192.9.201.23`)+db(`fgdw`)가 함께 보이면 proxy 가 **키 이름 패턴**(user 류 `*USER`/`*ID`/`*UID`/`*ACCOUNT`, password 류 `*PASSWORD`/`*PW`/`*PWD`/`*SECRET`)으로 자격증명을 식별해 시스템계정으로 덮는다(개인계정 평문 유출 차단 — fc-cost-table 사고 방지). **다만 이 서버 폴백에만 기대지 말 것** — 이름이 패턴에서 벗어나면(예 `MY_ACCT`) 서버가 못 잡으므로, 비표준 이름은 **태깅이 우선이고 서버 폴백은 보조 안전판**이다.
 - **단일·멀티서비스 공통:** 서비스 dir 별 env set 마다 위 규칙을 독립적으로 적용한다.
 
 #### env item 최종 예시 (비표준 이름 + 태그)
