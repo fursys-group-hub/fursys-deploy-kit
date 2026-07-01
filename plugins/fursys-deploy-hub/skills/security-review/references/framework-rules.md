@@ -172,6 +172,39 @@ CMD ["node", "server.js"]
 - 포트: 정적 서버 포트(nginx 80 등)와 Dockerfile `EXPOSE` 일치.
 - 시작 방법: 멀티스테이지(빌드 → nginx/serve 로 복사) Dockerfile 권장. 운영 빌드에서 source map 비노출 권장.
 
+#### ②-1. nginx custom conf + `localhost` HEALTHCHECK = IPv6 불일치로 롤백 (item66 — 정적/nginx 공통 함정)
+> Vite→nginx 뿐 아니라 **순수 정적 HTML 을 nginx:alpine 으로 서빙하는 모든 앱** 공통이다.
+
+**증상:** 빌드·서빙은 정상인데 **HEALTHCHECK 자가진단만 실패** → Coolify 가 컨테이너를 unhealthy 로 보고 10회 재시도 후 **롤백**(신규 앱은 되돌릴 이전 컨테이너가 없어 결국 **404**). status.sh 가 잠깐 RUNNING 을 줬어도 실제로는 롤백된다.
+
+**근본 원인(IPv6 불일치):**
+- `nginx:alpine` 은 **기본 `default.conf` 에 `listen [::]:80;`(IPv6) 자동추가 스크립트(`10-listen-on-ipv6-by-default.sh`)** 를 넣는다 — 단, **custom conf 를 마운트/COPY 하면 그 스크립트가 스킵**된다. custom `.nginx.conf` 가 `listen 80;`(IPv4)만 가지면 nginx 는 IPv6 를 안 듣는다.
+- Dockerfile `HEALTHCHECK` 이 `wget http://localhost/` 를 쓰면, alpine 의 `localhost` 는 보통 **`::1`(IPv6) 을 먼저** 시도 → nginx 가 IPv6 를 안 듣고 있어 **연결 거부** → healthcheck 실패 → 롤백.
+
+**deploy-fix 가 nginx Dockerfile/conf 를 생성·수정할 때 지킬 규칙(둘 다 적용 권장):**
+1. **HEALTHCHECK 는 `127.0.0.1`(IPv4 명시)로** — `localhost` 금지. custom conf 유무·IPv6 설정과 무관하게 안전:
+   ```dockerfile
+   HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
+     CMD wget -q --spider http://127.0.0.1/ || exit 1
+   ```
+2. **custom nginx conf 를 둘 거면 `listen [::]:80;` 를 `listen 80;` 와 함께** 명시(IPv4/IPv6 둘 다 듣게 — 자동추가 스크립트 스킵 보완):
+   ```nginx
+   server {
+     listen 80;
+     listen [::]:80;
+     ...
+   }
+   ```
+
+**점검(deploy-readiness §5 연계):** nginx custom conf(`*.conf`/`nginx.conf`/`.nginx.conf`)가 있고 `listen [::]` 가 없는데 Dockerfile HEALTHCHECK 이 `localhost` 를 쓰면 → **높음**(배포 후 롤백→404 위험). 아래 grep 으로 확인:
+```bash
+CONF="$(ls nginx.conf .nginx.conf default.conf 2>/dev/null; find . -maxdepth 2 -name '*.conf' -path '*nginx*' 2>/dev/null | head)"
+if [ -n "$CONF" ] && ! grep -rqE 'listen\s+\[::\]' $CONF 2>/dev/null; then
+  grep -qiE 'HEALTHCHECK.*localhost' Dockerfile && echo "WARN: nginx custom conf 에 listen [::]:80 없음 + HEALTHCHECK localhost → IPv6 불일치로 롤백 위험(127.0.0.1 로 바꾸거나 listen [::]:80 추가)"
+fi
+```
+→ 자동수정(`type:"nginx-healthcheck"`): HEALTHCHECK 의 `localhost`→`127.0.0.1` **한 줄 치환**(가장 안전·최소), 그리고 custom conf 가 있으면 `listen [::]:80;` 동반 추가. 빌드·서빙 로직은 안 건드린다.
+
 ---
 
 ## 5. Streamlit (`streamlit`)
@@ -183,6 +216,7 @@ CMD ["node", "server.js"]
   - `enableXsrfProtection = false` → 중간 위험
   - `gatherUsageStats = false` **필수(사내 정책 — 텔레메트리/데이터 외부 송신 방지).** **누락 시 엔진이 결정적으로 잡는다**(`Streamlit Telemetry Not Disabled`, medium — item14). `gatherUsageStats=false`(config.toml) 또는 `STREAMLIT_BROWSER_GATHER_USAGE_STATS=false`(env) 중 하나라도 있으면 면제. **엔진이 이미 finding 을 만드므로 같은 내용을 `deploy_fixes[]` 에 중복 기재하지 말 것**(엔진 finding 을 deploy-fix 가 처리). 단 어디에도 비활성 선언이 없으면 config.toml `[browser]` 섹션에 추가하도록 안내.
 - `st.secrets["KEY"]` 로 접근하는 키들을 모두 추출해 배포 설정값으로 매핑. **`st.secrets["X"]` 직접 첨자 접근은 사내 서버에서 런타임 KeyError 로 깨진다** → 비침투 폴백(`st.secrets.get("X", os.environ.get("X"))` + `load_dotenv()`)으로 고친다(자동수정 `type:"secrets-to-env"` — deploy-fix SKILL ⑤-4, 항목25). 폴백의 두 번째 인자에 **실제 비밀값을 적지 말 것**(env 만, 폴백 리터럴 금지 — 엔진 `Hardcoded Secret Fallback`).
+  - **(item48) 이미 안전한 폴백이 있으면 `secrets-to-env` 를 만들지 않는다(과수정 금지).** 앱이 이미 ① `st.secrets.get("X", os.environ.get("X"))`/`os.getenv("X")` 폴백, 또는 ② `try: st.secrets[...] except: os.environ[...]`(또는 `_get_secret()` 같은 헬퍼로 감싼) **try/except 폴백**을 갖고 있으면, 사내 서버 env 로 이미 동작하므로 **수정 대상이 아니다.** `st.secrets["X"]` **직접 첨자 접근이 폴백 없이 그대로** 남아 있는 경우만 `deploy_fixes[]` 에 `secrets-to-env` 를 넣는다. 각 키가 이미 폴백으로 감싸였는지 확인하고, 감싸인 키는 스킵한다(foam-nesting `_get_secret()` 처럼 헬퍼로 감싼 케이스는 자동수정 불필요).
 - 파일 업로드 위젯 크기/형식 제한.
 - 사용자 입력 → SQL/shell 실행 경로 없는지.
 - **`st.image(...)` 등에 외부/사용자 제공 URL 을 그대로 넘기지 않는지(SSRF·외부 호출).** 외부 이미지 URL 은 사내망에서 막히거나 SSRF 통로가 될 수 있다 — 정적 자산은 리포지토리에 포함(`st.image("assets/logo.png")`)하거나 검증된 사내 경로만 사용. (`st.image`/`st.video`/`st.audio` 공통.)
@@ -208,6 +242,15 @@ CMD ["node", "server.js"]
 ### ② 사내 서버 배포 요건
 - 포트: uvicorn/gunicorn listen 포트(보통 8000)와 Dockerfile `EXPOSE` 일치.
 - 시작 방법: `CMD` 가 `uvicorn main:app --host 0.0.0.0 --port 8000`(또는 gunicorn+uvicorn worker) 형태. `--host 0.0.0.0` 필수.
+- **(item47) `CMD` 의 `uvicorn <모듈>:<앱>` 이 실제 파일·변수와 맞는지 검증한다.** FastAPI 앱은 `if __name__ == "__main__"` 없이 ASGI 서버가 `모듈:앱` 문자열로 임포트하는 구조가 흔해, `모듈:앱` 이 틀리면(파일명·변수명 불일치) 컨테이너가 `ModuleNotFoundError`/`AttributeError` 로 **기동 즉시 죽는다.** LLM 판단에만 맡기지 말고 결정적으로 대조:
+  ```bash
+  # CMD 의 uvicorn/gunicorn 대상(module:var) 추출
+  grep -oiE '(uvicorn|gunicorn)[^\n]*\b([a-zA-Z0-9_.]+):([a-zA-Z0-9_]+)' Dockerfile 2>/dev/null
+  # 예 'main:app' → main.py 안에 app = FastAPI(...) 가 있나 (모듈은 . 를 / 로, 파일 존재 + 변수 정의 확인)
+  #  MODULE=main VAR=app 이면:  test -f main.py && grep -qE "^\s*app\s*=\s*FastAPI" main.py
+  ```
+  - `모듈`(`.` → 디렉터리 구분)에 해당하는 `.py` 파일이 없거나, 그 파일에 `<앱> = FastAPI(...)`(또는 `= APIRouter`/할당) 정의가 없으면 → **높음**(기동 실패). 화면 문구: "앱을 켜는 명령이 가리키는 위치(파일·이름)를 찾지 못해요 — 시작 명령의 `모듈:앱` 이름을 실제 파일과 맞춰야 켜집니다."
+  - `--factory` 옵션이면 `<앱>` 이 함수(호출 시 앱 반환)일 수 있으니 변수/함수 둘 다 허용.
 - 의존성: `requirements.txt`/`pyproject.toml` 이 이미지 빌드에 설치되는지.
 
 ---
@@ -236,7 +279,7 @@ CMD ["node", "server.js"]
 - `FROM` 이 공식/검증 이미지인지(Alpine, Debian slim 등).
 - 멀티스테이지로 빌드 산출물만 최종 이미지에 포함하는지.
 - `USER` 지시자로 non-root 실행하는지(root 실행 지양).
-- `COPY .` 시 `.dockerignore` 에 `.env`, `.git`, `node_modules` 가 포함됐는지(시크릿/불필요 파일 유입 방지).
+- `COPY .` 시 `.dockerignore` 에 `.env`, `.git`, `node_modules` 가 포함됐는지(시크릿/불필요 파일 유입 방지). **(item54) `node_modules/` 가 `.dockerignore` 에 없으면 특히 위험:** `RUN npm install`(또는 `npm ci`)로 컨테이너 안(linux)에 맞는 의존성을 설치한 뒤 `COPY . .` 가 **로컬(예: Windows/mac) node_modules 를 덮어써** 네이티브 바이너리 불일치·플랫폼 오류로 런타임 크래시가 난다. Node 앱은 `.dockerignore` 에 `node_modules` 가 **반드시** 있어야 한다 — 없으면 **높음**. 없으면 자동수정으로 `.dockerignore` 에 `node_modules`(+`.env`·`.git`) 한 줄씩 추가.
 - `ENV` 로 시크릿을 직접 박지 않았는지(반드시 런타임 주입).
 - `EXPOSE` 포트가 앱 실제 포트·사내 서버 설정과 일치하는지.
 - `HEALTHCHECK` 정의 권장.
@@ -276,3 +319,21 @@ CMD ["node", "server.js"]
 
 ### 대체 안내(쉬운 우리말)
 - "이 앱은 외부 호스팅/외부 데이터베이스(Firebase 등)에 기대고 있어요. 사내 보안 정책상 외부 호스팅은 쓸 수 없어, 사내 서버(컨테이너)와 사내 데이터 저장소로 옮겨야 해요." 라고 알리고, 외부 의존을 어디서 쓰는지(파일·기능) 짚어 준다. **외부 호스팅으로 배포하는 방법은 안내하지 않는다.**
+
+### 전환 과도기 앱 — "보안증상 제거 ≠ 구조 정상화" (item50·51·61·65 통합)
+외부 SaaS(Supabase 등)→사내로 **옮기다 만** 앱은, deploy-fix 가 노출 키를 빈 값(`''`)/env 로 만들어 **치명을 없애고 verdict 를 ok** 로 만들 수 있다. 하지만 그건 **보안 증상만 없앤 것**이고 구조는 그대로다 — ① 구 클라이언트(Supabase) 코드와 신 백엔드 코드가 **동시 존재(이중 백엔드)**, ② `IS_FURSYS = location.hostname.includes('fursys.com')` 같은 **호스트명 기반 분기**로 배포 후에도 브라우저에 외부 SaaS 코드/키 잔존(item51), ③ Google Sheets `gviz/tq`·Apps Script 직접 호출 등 **브라우저의 외부 서비스 직접 의존**(item65) 이 남아 인트라넷에서 동작 불가할 수 있다.
+
+**검토 신호(하나라도 → "구조 미완" 별도 경고, verdict 와 무관):**
+```bash
+# 이중 백엔드: 외부 SaaS 클라이언트가 아직 남아 있나
+grep -rniE '@supabase/supabase-js|createClient\(|firebase/(firestore|auth)|gviz/tq|script\.google\.com/macros' . \
+  --include='*.js' --include='*.jsx' --include='*.ts' --include='*.tsx' --include='*.html' --include='*.vue' \
+  2>/dev/null | grep -viE '/(node_modules|\.venv|dist|build)/' | head
+# 호스트명 기반 환경분기(item51)
+grep -rnoE 'location\.hostname[^\n]{0,40}(includes|indexOf|===|==)' . \
+  --include='*.js' --include='*.jsx' --include='*.ts' --include='*.tsx' --include='*.html' --include='*.vue' \
+  2>/dev/null | grep -viE '/(node_modules|\.venv|dist|build)/' | head
+```
+- **판정:** 위 신호가 있고 **동시에 사내 경로(`/api/...`)로도 접근**하면 = 전환 과도기(이중 백엔드). → **"구조 미완" 경고(중간)를 리포트에 별도 표시**한다. **verdict 는 막지 않는다**(치명이 이미 해소됐으면 ok 유지 — deploy-readiness §7 불변). 화면 문구: "보안상 급한 문제(노출된 키)는 막았어요. **다만 이 앱은 예전(외부 서비스) 방식과 새(사내) 방식이 섞여 있어**, 일부 화면은 사내에서 데이터가 안 나올 수 있어요. 구조를 사내 방식 하나로 정리하는 건 앱을 만든 분이 결정해 주셔야 해요(어디를 정리할지 짚어 드릴게요)." + 구 클라이언트/분기 위치를 짚어 준다.
+- **key→`''` 의 한계 명시(item61):** deploy-fix 가 외부 SaaS 키를 빈 값/env 로 만들어 "치명 해소"가 됐어도, **그 키를 쓰던 기능은 여전히 외부 서비스를 호출**하려 한다(값만 비었을 뿐 코드 경로는 살아 있음) → 인트라넷에서 실패. "키를 뺐다=해결"이 아니라 **"그 기능을 사내 방식으로 바꿔야 완성"** 임을 위 경고로 알린다. (이건 §9-2 정적/내부 API 판정과 짝 — §9 는 내부/localhost, §10 은 외부 SaaS 직접의존.)
+- **(item52) 외부 CDN 이미지 대량 직접참조 → 낮음(방화벽서 깨질 수 있음).** `<img src="https://<외부CDN>/...">` 를 대량 인라인(예 sidiz 342개)하면 사내 방화벽에서 외부 CDN 이 막힐 때 이미지가 안 뜬다. 배포는 되고 기능은 살아있으니 **낮음(경고만)** — "이미지를 외부 주소에서 불러와요. 사내망에서 외부가 막히면 이미지가 안 보일 수 있어요(기능엔 지장 없음). 자주 쓰는 이미지는 앱에 포함하는 게 안전해요." 소수(로고 1~2개 등)면 노이즈이니 **다수(수십 개↑)일 때만** 언급.

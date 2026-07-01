@@ -17,6 +17,7 @@
 6. 설정값 종류 분류 (빌드 포함 / 일반 / 잠금)
 7. 배포가능 축 판정 규칙
 8. 설정값이 컨테이너 안인가 로컬 도구 전용인가 (scope 판정 — Dockerfile 앵커)
+9. 런타임 접속 대상 점검 (localhost 하드코딩 · 정적 배포에서 깨지는 내부 API 의존)
 
 ---
 
@@ -108,10 +109,15 @@ grep -iE '^(CMD|ENTRYPOINT)' Dockerfile
 grep -iE '^\s*VOLUME' Dockerfile 2>/dev/null                  # Dockerfile VOLUME 선언
 grep -riE 'better-sqlite3|[^a-z]sqlite3|DB_PATH|DATABASE_PATH' . --include='*.json' --include='*.ts' --include='*.js' --include='*.py' --include='.env*' 2>/dev/null | head
 grep -riE 'UPLOAD_DIR|UPLOADS_DIR|STORAGE_DIR|DATA_DIR' . --include='.env*' --include='*.ts' --include='*.js' --include='*.py' 2>/dev/null | head
+# (item49) 파일 기반 상태저장 — SQLite/VOLUME 외에 순수 파일 쓰기(open(...,'w')·json.dump·fs.writeFileSync)로
+#   data/·상태 파일을 지속 기록하는 앱. 재배포 때마다 사라지면 데이터 유실.
+grep -rnoE "open\([^)]*['\"][^'\"]*\.(json|csv|txt|db|sqlite|dat)['\"][^)]*,\s*['\"][aw]" . --include='*.py' 2>/dev/null | grep -viE '/(node_modules|\.venv|tests?|fixtures?)/' | head
+grep -rnoE "(fs\.(writeFileSync|writeFile|appendFileSync|createWriteStream)|json\.dump)\s*\(" . --include='*.py' --include='*.js' --include='*.ts' --include='*.cjs' --include='*.mjs' 2>/dev/null | grep -viE '/(node_modules|\.venv|tests?|fixtures?)/' | head
 ```
 - **Dockerfile `VOLUME ["<경로>"]` 선언** — 그 경로가 영속 볼륨 후보.
 - **SQLite 사용**(`better-sqlite3`/`sqlite3`/`DB_PATH=/dir/...`) + DB 파일 경로가 디렉터리 아래(`*.db`) — 그 **상위 디렉터리**가 후보(예: `DB_PATH=/data/memos.db` → `/data`).
 - **업로드/저장 디렉터리 설정값**(`UPLOAD_DIR=/data/...` 등) — 그 디렉터리가 후보.
+- **(item49) 순수 파일 기반 상태저장** — `open(path,'w'|'a')`·`json.dump(..., open(...))`·`fs.writeFileSync`·`fs.createWriteStream` 등으로 **런타임에 데이터/상태 파일을 쓰는데 그 경로가 앱 디렉터리 안**(예 `data/results.json`·`state.db`)이면, 재배포 때 이미지가 새로 빌드돼 **그 파일이 초기화(유실)** 된다. → 그 파일이 쓰이는 **디렉터리**를 볼륨 후보로 잡는다(예 `data/`→컨테이너 경로 `/app/data` 또는 `/data`). **오탐 주의:** 로그 출력(`app.log`)·빌드 산출물(`dist/`)·`/tmp` 임시파일·읽기전용(`open(...,'r')`)은 후보 아님. **"사용자가 만든 업무 데이터를 유지해야 하나"** 로 LLM 이 판정(단순 캐시/임시는 제외).
 - **기록 규칙:** 후보 경로의 **상위 디렉터리**(파일 아님 — 예 `/data`)를 모아 중복 제거한다. 이 목록을 5-1(security-review SKILL)의 `volumes_plan` 에 적는다. 신호가 하나도 없으면 `volumes_plan` 은 생략하거나 `[]`(볼륨 미요청 — 현행 동일).
 
 **non-root 권한 점검(단일 서비스에도 적용 — §1 의 멀티서비스 점검을 확장):** 볼륨 경로를 감지했으면, Dockerfile 이 `USER`(non-root) **앞에서** 그 경로를 `mkdir -p <경로> && chown <user> <경로>` 하는지 확인한다.
@@ -128,13 +134,23 @@ grep -niE '^\s*(USER|RUN .*mkdir|RUN .*chown)' Dockerfile 2>/dev/null
 
 ---
 
-## 5. HEALTHCHECK 권장
+## 5. HEALTHCHECK 권장 (+ nginx IPv6 불일치 함정)
 
 ```bash
 grep -i 'HEALTHCHECK' Dockerfile
 ```
 
 - 없으면 **낮음(권장)** 으로만 표시(배포를 막지 않음). 화면 문구: "상태 점검(HEALTHCHECK)을 넣으면 배포 후 정상 여부를 더 정확히 확인할 수 있어요(권장)."
+
+### 5-1. nginx custom conf + `localhost` HEALTHCHECK = IPv6 불일치 롤백 (item66 — 있으면 높음)
+HEALTHCHECK 이 **있어도** nginx 정적 서버에서 `localhost` 를 쓰면 배포가 깨질 수 있다(빌드·서빙은 정상인데 healthcheck 자가진단만 실패 → Coolify 롤백 → 404). `nginx:alpine` 은 custom conf 를 쓰면 IPv6(`listen [::]:80`) 자동추가를 스킵하는데, alpine `localhost` 는 `::1`(IPv6) 을 먼저 시도해 연결 거부되기 때문이다.
+```bash
+CONF="$(ls nginx.conf .nginx.conf default.conf 2>/dev/null; find . -maxdepth 2 -name '*.conf' -path '*nginx*' 2>/dev/null | head)"
+if [ -n "$CONF" ] && ! grep -rqE 'listen\s+\[::\]' $CONF 2>/dev/null; then
+  grep -qiE 'HEALTHCHECK.*localhost' Dockerfile && echo "WARN: nginx custom conf 에 listen [::]:80 없음 + HEALTHCHECK localhost → IPv6 불일치로 롤백 위험"
+fi
+```
+- 해당하면 **높음**(배포 후 롤백→404). 화면 문구: "상태 점검이 앱에 접속하지 못해 **배포가 되돌려질 수 있어요(롤백).** 점검 주소를 `127.0.0.1` 로 바꾸면 돼요." 자동수정 `type:"nginx-healthcheck"`(HEALTHCHECK `localhost`→`127.0.0.1` 한 줄 + custom conf 에 `listen [::]:80` 동반) — 상세는 `framework-rules.md` §4 ②-1.
 
 ---
 
@@ -200,3 +216,37 @@ Dockerfile: builder `COPY inventory-monitoring/ .`(+ runner `COPY --from=builder
 > ⚠️ **`BRANDS` 주의:** `inventory-monitoring/**` 의 `.tsx` 에 `const BRANDS = [...]` 가 보이지만 이는 **코드 안의 배열 리터럴**이지 `import.meta.env.BRANDS` 가 아니다(=env 참조 아님). env `BRANDS` 는 `scripts/supabase/migrate-item-history.cjs` 의 `process.env.BRANDS` 만 → `local`. 코드의 동명 식별자에 속지 말고 **env 참조(`process.env.X`/`import.meta.env.X`)인지** 본다.
 
 **기대 효과:** scm-monitoring 재검토 시 ETL 전용 env 가 `scope:"local"` 로 분류 → deploy 가 TABLEAU/SHEET/MSSQL/SUPABASE 를 **묻지 않고** nginx 정적 앱을 바로 배포(현재는 강제 질문). `BASE_URL` 은 `container` 로 남아 빌드 정상.
+
+---
+
+## 9. 런타임 접속 대상 점검 (localhost 하드코딩 · 정적 배포에서 깨지는 내부 API 의존)
+
+빌드·기동이 정상이어도 **앱이 접속하려는 대상이 배포 환경에 없으면** 화면은 뜨는데 기능이 죽는다(사용자는 "왜 데이터가 안 나와요?"). 검토는 빌드를 안 돌리므로 놓치기 쉽다 — 아래 두 유형을 소스에서 확인한다. **이건 배포가능 축을 막지 않는 "기능 경고"**(§7 결정적 차단 항목 아님)이므로, verdict 는 ok 여도 리포트에 별도로 표시해 배포 후 깨짐을 예고한다.
+
+### 9-1. `localhost`/`127.0.0.1` + 포트 하드코딩 (item63)
+클라이언트/서버 코드가 `http://localhost:PORT` 또는 `http://127.0.0.1:PORT` 를 **접속 대상으로 하드코딩**하면(예: `const SERVER='http://localhost:5002'` 를 `fetch(SERVER+...)` 에 사용), 배포 컨테이너/브라우저에는 그 포트의 서비스가 없어 **연결 거부**로 기능이 깨진다.
+```bash
+# 접속 대상으로 쓰이는 localhost/127.0.0.1:포트 하드코딩 (주석·문서는 노이즈 → 코드 파일만)
+grep -rnoE 'https?://(localhost|127\.0\.0\.1)(:[0-9]+)?' . \
+  --include='*.js' --include='*.jsx' --include='*.ts' --include='*.tsx' \
+  --include='*.mjs' --include='*.cjs' --include='*.py' --include='*.html' --include='*.vue' \
+  2>/dev/null | grep -viE '/(node_modules|\.venv|dist|build)/' | head -30
+```
+- 매칭이 **fetch/axios/XHR/requests/WebSocket 등 실제 접속에 쓰이면 → 높음**(기능 깨짐). 화면 문구: "앱이 **내 PC(localhost) 주소로 접속**하도록 되어 있어요. 사내 서버에 올리면 그 주소가 없어 **해당 기능이 동작하지 않습니다.** 접속 주소를 설정값(env)으로 빼거나 상대경로(`/api/...`)로 바꿔야 해요."
+- **오탐 주의(높음으로 올리지 않음):** ① 개발용 CORS 허용목록·`--server.address` 바인딩(`0.0.0.0`/`localhost` listen)·주석·README 예시 → 접속 대상이 아니므로 경고 안 함. ② 이미 `process.env.X || 'http://localhost:PORT'` 처럼 **env 우선 + localhost 는 로컬 폴백**이면 배포 시 env 로 대체되니 **낮음(안내만)** — env 를 배포 설정값으로 넣도록만 짚는다. **"실제 접속 대상으로 쓰이는 순수 하드코딩"일 때만 높음.**
+- 자동수정 성격: 접속 주소는 보통 **env 로 분리 + 로컬 폴백**(`const SERVER = process.env.API_BASE || '/api'` 또는 상대경로)이 정답. 어느 대상으로 바꿀지는 앱 구조 판단이라 복붙 프롬프트로 안내(자동 일괄치환 금지 — 여러 대상이 섞이면 오작동).
+- **(item45) env 폴백 기본값이 외부 호스팅 URL(`process.env.SHEETS_REFERER || 'https://xxx.vercel.app'`)이면 → 낮음(안내).** 배포 설정값을 넣으면 대체되지만, 안 넣으면 **외부 주소로 요청이 나가거나 그 도메인으로 403** 이 난다(사내 정책·기능 양쪽 문제). 폴백 기본값은 **사내 도메인이나 빈 문자열('')/상대경로**로 바꾸도록 안내한다(외부 호스팅 도메인을 코드 기본값에 남기지 않는다 — round7 item31·framework-rules §10 연장). 자동수정보다 "배포 설정값으로 사내 주소를 넣으세요 + 코드 기본값은 사내/빈값으로" 안내가 우선.
+
+### 9-2. 상대경로 내부 API 의존 페이지를 "순수 정적"으로 오판 (item64)
+`fetch('/scp/api/...')`·`axios.get('/api/data')` 처럼 **상대경로 내부 API** 를 호출하는 페이지는, **nginx 등 정적 서버 단독**으로 배포되면 그 `/api` 를 받아 줄 백엔드가 없어 **404 로 기능이 깨진다**(HTML·CSS·JS 는 떠서 겉보기엔 정상 → verdict ok 인데 기능 불가). "정적 사이트니 nginx 로 올리면 끝"이라 **오판하기 쉬운 게 핵심.**
+```bash
+# 상대경로 내부 API 호출(스킴 없이 / 로 시작) — 정적 배포면 받아줄 백엔드가 필요
+grep -rnoE "(fetch|axios(\.(get|post|put|delete|patch))?|XMLHttpRequest)[^\n]{0,40}['\"]/[a-zA-Z0-9_]" . \
+  --include='*.js' --include='*.jsx' --include='*.ts' --include='*.tsx' --include='*.html' --include='*.vue' \
+  2>/dev/null | grep -viE '/(node_modules|\.venv|dist|build)/' | head -30
+```
+- **판정(LLM 맥락):** 이 repo 의 배포 형태가 **정적 서빙(nginx/serve, 백엔드 프로세스 없음)** 인가를 먼저 본다(Dockerfile 이 nginx:alpine 등 정적 서버이고, `/api` 를 처리할 서버 코드·프록시(`proxy_pass`)·멀티서비스 백엔드가 없음). 그렇다면 위 상대경로 API 를 쓰는 페이지들은 **배포 후 기능 불가 → 높음(기능 경고)**. 화면 문구: "이 앱의 일부 화면(○○·○○)은 **자체 데이터 서버(API)** 에 연결해야 동작하는데, 지금 방식(정적 파일 서버 단독)으로 올리면 그 부분이 **작동하지 않습니다.** 정적으로 서빙 가능한 화면만 쓰거나, 데이터 서버를 함께 올리는(멀티서비스) 구성이 필요해요."
+- **오탐 주의:** ① 백엔드가 같은 앱에 함께 뜨거나(FastAPI/Express 가 정적 + `/api` 둘 다 서빙), ② nginx conf 에 `/api` `proxy_pass` 로 사내 API 를 프록시하거나, ③ 멀티서비스로 백엔드 서비스가 함께 배포되면 → **정상(경고 안 함).** "상대경로 API 를 쓴다"만으로 무조건 경고하지 말고 **"이 배포 구성에서 그 API 를 받아 줄 것이 있나"** 로 판정한다.
+- **#51(IS_FURSYS 호스트분기)·#65(외부 SaaS 직접의존)·Supabase 직접호출도 같은 계열**(브라우저가 배포 환경에 없는 대상에 접속) — 그쪽은 `framework-rules.md` §10(외부 PaaS) 로, 이 §9 는 **내부/localhost 접속 대상**을 다룬다.
+
+> **§9 는 verdict 를 막지 않는다(§7 불변).** localhost 하드코딩·정적배포 API 의존은 "높음(기능 경고)"으로 리포트에 표시하되, Dockerfile/포트/시작/필수env 같은 배포가능 축 결정 항목은 아니다. 사용자가 "기능 일부 깨져도 겉은 뜬다"는 걸 배포 전에 알게 하는 게 목적이다(iloomscm 처럼 겉은 200 인데 특정 페이지 기능 불가 — 사후 혼란 방지).

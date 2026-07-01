@@ -88,6 +88,15 @@ const bySev = (a, b) => (sevRank[a.severity] ?? 9) - (sevRank[b.severity] ?? 9);
 const auto = [];     // 자동수정 대상
 const manual = [];   // 사람 판단 필요(안내만)
 
+// (item58) 중복 카운트 방지 — 엔진 finding 이 잡은 (파일)을 deploy_fixes 가 다시 세지 않게.
+// security-review 가이드는 "엔진이 잡은 건 deploy_fixes 에 중복 기재 마라"이지만(라운드5),
+// 실제로 sec-llm 이 같은 파일의 같은 문제를 또 적어 "자동수정 5개"로 부풀던 사례(sidiz)가 있었다.
+// 방어적으로 엔진 finding 의 파일 경로를 모아, 같은 파일을 가리키는 deploy_fixes 는 스킵한다.
+// (파일 없는 finding(null)은 dedup 키에 넣지 않는다 — 오버매칭 방지.)
+const engineFindingFiles = new Set(
+  findings.filter((f) => f && typeof f === "object" && f.file).map((f) => f.file),
+);
+
 for (const f of findings) {
   if (!f || typeof f !== "object") continue;
   const sev = SEV_KO[f.severity] || f.severity || "?";
@@ -103,6 +112,9 @@ for (const f of findings) {
 // (deployfix2) 배포준비 문제(deploy_fixes) — aiPrompt 있으면 자동수정, 없으면 안내만.
 for (const d of deployFixes) {
   if (!d || typeof d !== "object") continue;
+  // (item58) 엔진 finding 이 이미 잡은 파일의 보안 항목이면 중복 → 스킵(카운트 부풀림 방지).
+  //   sec-llm(보안 심화)만 dedup 대상 — copy-public/port 등 배포준비 타입은 엔진과 무관하니 유지.
+  if (d.type === "sec-llm" && d.file && engineFindingFiles.has(d.file)) continue;
   const sev = SEV_KO[d.severity] || d.severity || "높음";
   const loc = d.file || (d.type ? `(${d.type})` : "-");
   const item = { sev, loc, type: d.type || "배포 준비", message: d.message || "" };

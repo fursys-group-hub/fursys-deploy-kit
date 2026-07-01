@@ -62,12 +62,26 @@ const [enginePath, repo, commit, security, deployableStr, final, reportDataPath]
 let eng;
 try { eng = JSON.parse(fs.readFileSync(enginePath, "utf8")); }
 catch (e) { console.error("ENGINE_PARSE_FAIL: " + e.message); process.exit(1); }
+// (#56) final 어휘 정규화 — 서버(board)는 "ok"|"blocked" 만 허용하는데, 일부 검토가
+//   last-verdict.json 의 final 에 보안 축 어휘("pass"/"fail")나 대문자를 써서 넘겨 UPLOAD_FAILED 502
+//   (final 은 ok|blocked)가 났다(foam-nesting). 여기서 결정적으로 매핑해 어휘 불일치를 흡수한다.
+//   pass/ok/success → ok, fail/blocked/block/no → blocked. 이미 ok|blocked 면 그대로.
+//   security(pass|caution|blocked)는 별개 축이라 건드리지 않는다 — final 만 정규화.
+function normalizeFinal(v) {
+  const s = String(v == null ? "" : v).trim().toLowerCase();
+  if (s === "ok" || s === "pass" || s === "success" || s === "passed") return "ok";
+  if (s === "blocked" || s === "block" || s === "fail" || s === "failed" || s === "no") return "blocked";
+  // 알 수 없는 값은 안전측(blocked)으로 — 미검토 코드가 ok 로 새어 배포되는 것보다 낫다.
+  return "blocked";
+}
+const finalNorm = normalizeFinal(final);
+if (finalNorm !== final) console.error("FINAL_NORMALIZED: '" + final + "' -> '" + finalNorm + "'");
 const body = {
   repo,
   commit,
   security,
   deployable: deployableStr === "true",
-  final,
+  final: finalNorm,
   summary: (eng.summary && typeof eng.summary === "object") ? eng.summary : { critical: 0, high: 0, medium: 0, low: 0 },
 };
 if (eng.target && eng.target.framework) body.framework = eng.target.framework;

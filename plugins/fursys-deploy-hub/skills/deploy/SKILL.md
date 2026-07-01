@@ -46,8 +46,23 @@ proxy는 GitHub(`fursys-group-hub/<repo>`)에 **이미 올라간 코드**로 앱
 ```bash
 git remote -v
 git status --porcelain
+# (#55) origin 에 아직 안 올라간 로컬 커밋(ahead)이 있는지 본다 — proxy 는 origin 의 커밋을
+#  clone 하므로, deploy-fix 가 **커밋만 하고 push 를 안 한** 상태면 origin 엔 옛 커밋(Dockerfile
+#  없음)만 있어 첫 빌드가 'no such file: Dockerfile' 로 헛빌드(FAILED) 난다. git status 는
+#  uncommitted(작업트리) 만 보고 이 ahead(미push) 상태를 못 보므로 별도로 확인한다.
+UPSTREAM="$(git rev-parse --abbrev-ref --symbolic-full-name '@{u}' 2>/dev/null || true)"
+if [ -n "$UPSTREAM" ]; then
+  AHEAD="$(git rev-list --count "$UPSTREAM"..HEAD 2>/dev/null || echo 0)"   # >0 = 미push 커밋 있음
+else
+  AHEAD="NO_UPSTREAM"   # 추적 브랜치 미설정 — push 로 -u 설정 필요
+fi
+echo "AHEAD=$AHEAD"
 ```
-- **원격이 `fursys-group-hub/<repo>` 이고 이미 올라가 있으면** → repo 식별자를 `fursys-group-hub/<레포이름>` 으로 확정하고(`deploy.sh` 의 `repo` 인자) 다음으로 진행한다. (커밋 안 된 변경분이 남아 있으면 "최신 코드를 먼저 올릴게요" 안내 후 `git add -A && git commit && git push` 로 올린다 — **이 커밋이 ⑤ 게이트가 비교할 배포 트리를 만든다(커밋/푸시는 게이트보다 먼저 일어난다).** 커밋 후 HEAD = 실제 배포 커밋이다. deploy-fix 가 작업트리만 고쳐 둔 경우에도 여기서 비로소 커밋되므로 commit SHA 가 바뀌지만, ⑤가 **내용(tree) 기준**으로 비교하므로 재검토 없이 통과한다.)
+- **원격이 `fursys-group-hub/<repo>` 이고 이미 올라가 있으면** → repo 식별자를 `fursys-group-hub/<레포이름>` 으로 확정하고(`deploy.sh` 의 `repo` 인자) 다음으로 진행한다. **단, 코드가 origin 에 실제로 올라가 있어야 한다(proxy 는 origin 커밋을 clone 한다):**
+  - **커밋 안 된 변경분이 남아 있으면**(`git status --porcelain` 비어있지 않음) "최신 코드를 먼저 올릴게요" 안내 후 `git add -A && git commit && git push` 로 올린다.
+  - **(#55) 커밋은 됐는데 아직 안 올라간 게 있으면**(`AHEAD` 가 `0` 이 아님 — deploy-fix 가 작업트리를 고쳐 커밋만 하고 push 를 안 한 전형적 상태) **반드시 `git push` 로 먼저 올린다.** 이걸 건너뛰고 배포하면 origin 엔 옛 커밋(Dockerfile 없음)만 있어 **첫 빌드가 반드시 실패**한다(헛빌드 1회 → 사용자 혼란). `AHEAD=NO_UPSTREAM` 이면 추적 브랜치가 없는 것 → `git push -u origin HEAD` 로 올리며 추적을 설정한다.
+  - **위 push 가 끝난 뒤의 HEAD = 실제 배포 커밋이자 origin 에 올라간 커밋**이다 — **이 커밋이 ⑤ 게이트가 비교할 배포 트리를 만든다(커밋/푸시는 게이트보다 먼저 일어난다).** deploy-fix 가 작업트리만 고쳐 둔 경우에도 여기서 비로소 커밋·push 되므로 commit SHA 가 바뀌지만, ⑤가 **내용(tree) 기준**으로 비교하므로 재검토 없이 통과한다.
+  - ⚠️ **git push 는 이 스킬 흐름 안에서 사용자 코드를 회사 GitHub 로 올리는 정상 동작이다**(사내 배포 파이프라인의 일부). 켈시/오피스의 deploy-hub 자체 repo push(=Coolify 자동배포) 게이트와는 별개다.
 - **원격이 회사 GitHub가 아니거나, git 원격이 아예 없으면** → 배포를 진행하지 않고 **github-setup 으로 안내**하고 멈춘다(가입·연결·등록이 먼저다 — deploy 스크립트를 호출하지 않는다):
   > "배포하려면 코드가 회사 GitHub(`fursys-group-hub`)에 올라가 있어야 해요. **'깃허브 연결해줘'(또는 `/github-setup`)** 라고 하시면, 연결 상태를 확인하고 가입이 필요하면 신청을 돕고, 되면 이 프로젝트를 올려드릴게요."
 
@@ -266,6 +281,11 @@ rm -f "$ENV_TMP" 2>/dev/null || true   # deploy.sh 가 이미 지우지만 폴�
 완료/실패와 무관하게 전한다.
 - **핵심 원칙(꼭 전한다):** "**처음 한 번만 이 배포 명령을 쓰고, 그 다음부터는 코드를 고친 뒤 저장(`git push`)만 하면 자동으로 다시 올라갑니다. 배포 명령을 또 누르지 마세요.**" (배포 명령을 또 누르면 같은 걸 두 번 올리려다 혼선이 생긴다.)
 - 사용자가 한 일은 "처음 한 번 올리기" 요청뿐이며, 어려운 서버 작업은 전혀 필요 없었음을 자연스럽게 전한다.
+- **(item43) 배포 성공(RUNNING) 시 후속 외부 설정 안내:** `.fursys-deploy-hub/last-verdict.json` 에 **`post_deploy_actions`**(검토가 남긴 외부 후속설정 목록)가 있으면, 마무리에 **각 항목을 쉬운 우리말로 안내**한다 — 배포는 됐지만 사용자가 외부 콘솔에서 마저 해줘야 기능이 열리는 것들이다(예: "이 앱은 Google 지도/시트를 써요. Google Cloud 콘솔에서 **이 주소(`https://<도메인>`)를 허용 목록(Referer)에 추가**해야 지도가 떠요.", OAuth redirect URI 에 배포 주소 추가, 외부 webhook 주소를 배포 주소로 갱신 등). 없거나 `[]` 면 이 안내를 하지 않는다(현행 동일). 시크릿·키 값은 출력하지 않는다.
+  ```bash
+  # post_deploy_actions 존재 확인(있으면 각 message 를 사용자에게 안내)
+  grep -oE '"post_deploy_actions"[[:space:]]*:[[:space:]]*\[[^]]*\]' .fursys-deploy-hub/last-verdict.json 2>/dev/null
+  ```
 
 ## ⑩ 앱 삭제 — 사용자 경로 없음(IT 콘솔 전용)
 앱 삭제 기능은 제거됐다. 사용자가 "지워달라"고 해도 이 스킬에서 삭제하지 않는다(키·소유 개념이 없어 사용자 경로로는 안전하게 지울 수 없다). 이렇게 안내한다:

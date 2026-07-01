@@ -32,6 +32,7 @@ node -e 'JSON.parse(require("fs").readFileSync(".fursys-deploy-hub/_engine.json"
 - `ENGINE_JSON_INVALID` 가 나오면 **그 사실을 알리고 멈춘다**(오염된 파일로 등록·자동수정을 진행하지 않는다). PATH 미해결 등으로 엔진 대신 다른 출력이 섞였을 수 있다.
 - 결과 JSON 을 `.fursys-deploy-hub/_engine.json` 에 저장한다(`contracts/security-verdict.schema.json` 형식). 이 파일을 읽어 해석하고, **나중에 `/deploy`(⑤-1) 등록 때 빌더가 이 파일을 그대로 다시 써서 본문을 만든다(손 조립 방지).**
 - exit code: 0=pass, 1=caution, 2=blocked. (`2>/dev/null` 은 exit code 에 영향 없다.)
+  - **(item59) exit 1/2 는 "엔진 오류"가 아니라 정상 판정(caution/blocked)이다 — `&&` 체인으로 후속을 게이팅하지 말 것.** `fdh-engine ... && node -e '...'` 처럼 쓰면 caution(1)·blocked(2)일 때 뒤 단계(JSON 검증·저장 후처리)가 **건너뛰어져** 재검토가 깨진 것처럼 보인다(sidiz 재검토에서 관측). 위 예시처럼 **출력은 `>` 리다이렉트로 받고**(exit code 와 무관하게 파일은 써진다), 무결성 검증은 **별도 줄**에서 `JSON.parse` 로 한다. 엔진 실제 실패는 exit 3+ 또는 stdout 이 비었는지(파일 크기 0)로 판별한다 — exit 1/2 로 판별하지 않는다.
 - **엔진이 안 돌면 그 사실을 알리고 멈춘다(임의 판단 금지).**
 
 ### verdict JSON 구조 (이 필드만 쓴다)
@@ -118,7 +119,10 @@ ls -1 docker-compose.yml compose.yaml 2>/dev/null  # compose 있나(구조 힌�
     ],
     "volumes_plan": ["<감지한 영속 볼륨 컨테이너 디렉터리, 예 /data>"],
     "deploy_fixes": [
-      { "type": "copy-public|port|start-cmd|dockerfile|streamlit-config|next-build-env|volume-perm|secrets-to-env|static-folder|sec-llm", "severity": "critical|high", "file": "<관련 파일, 없으면 null>", "message": "<쉬운 우리말 한 줄 — 무엇이 문제인지>", "aiPrompt": "<그대로 붙여 고칠 수 있는 수정 지침. 자동수정 불가면 null>" }
+      { "type": "copy-public|port|start-cmd|dockerfile|streamlit-config|next-build-env|volume-perm|secrets-to-env|static-folder|nginx-healthcheck|sec-llm", "severity": "critical|high", "file": "<관련 파일, 없으면 null>", "message": "<쉬운 우리말 한 줄 — 무엇이 문제인지>", "aiPrompt": "<그대로 붙여 고칠 수 있는 수정 지침. 자동수정 불가면 null>" }
+    ],
+    "post_deploy_actions": [
+      { "kind": "api-key-referer|oauth-redirect|webhook-url|dns-allow|external-config", "message": "<배포 성공 *후* 사용자가 외부에서 해야 할 후속 설정 한 줄 — 쉬운 우리말>" }
     ]
   }
   ```
@@ -134,6 +138,7 @@ ls -1 docker-compose.yml compose.yaml 2>/dev/null  # compose 있나(구조 힌�
       - **`static-folder`(항목35 — Flask/FastAPI/Express 정적 서빙 루트가 서버 폴더 전체):** `Flask(__name__, static_folder=".")`·`StaticFiles(directory=".")`·`express.static(".")` 처럼 서버 루트 전체(소스·`.env`·설정)가 URL 로 노출되는 경우. **코드를 직접 뜯어고치기보다(침투적) 최소 수정 + 사용자 안내가 1순위:** `aiPrompt` 는 **정적 폴더 인자만 안전한 전용 폴더로 좁히는 한 줄 변경**(`static_folder="static"`·`directory="static"`·`express.static("public")`)을 담고, 그 전용 폴더(`static/`·`public/`)가 없으면 함께 만들도록 적는다(빈 `.gitkeep` 포함). **공개 자산이 실제로 루트에 흩어져 있어 폴더 이동이 필요한 경우처럼 코드 변경이 더 커지면**, `message` 에 "공개로 둘 파일만 `static/` 으로 옮겨야 해요(범위)"를 명시하고, 자동으로 파일을 옮기지 말고 **안내만**(`aiPrompt:null`)한다 — 어떤 파일이 공개여야 하는지는 사람 판단. `severity:"high"`.
     - **`severity`** 는 `critical`(배포 자체 불가 — Dockerfile 부재 등) 또는 `high`(빌드/기동 깨짐·서버 폴더 노출 등). 배포를 막지 않는 권고(HEALTHCHECK 낮음 등)는 담지 않는다.
     - **발견된 게 없으면(배포 준비 통과) 이 필드를 생략하거나 `[]`** 로 둔다(현행 동일). board 미업로드(로컬 `last-verdict.json` 전용 — 게이트·verdict shape 불변). 멀티서비스는 services 별 자동수정을 이 필드로 다루지 않는다(현행 유지).
+  - **(item43) `post_deploy_actions`(선택, 하위호환) = 배포가 *성공한 뒤* 사용자가 외부 콘솔에서 해야 하는 후속 설정 목록.** 배포 자체는 성공해도 외부 서비스 설정을 안 하면 기능이 막히는 것들이다 — Google API 키의 **HTTP Referer 허용목록**(배포 도메인 추가 안 하면 403), **OAuth redirect URI**(배포 도메인 추가), **외부 webhook URL**(배포 주소로 갱신), DNS/방화벽 허용 등. 검토(3)·4))에서 이런 외부 의존을 발견하면 각각 **쉬운 우리말 한 줄**로 적는다(값·시크릿 금지 — 무엇을 어디에 해야 하는지만). 이 목록은 deploy ⑧ 마무리에서 자동 안내된다. **발견된 게 없으면 생략하거나 `[]`**(현행 동일). board 미업로드(로컬 전용 — verdict shape 불변). deploy-check 리포트에도 같은 안내를 사람이 읽을 형태로 넣는다(양쪽 재사용 — 라운드2 정신).
   - **`env_plan` = 엔진 `envVars`(name·class) + 4)·심화에서 파악한 처리 메모.** 배포 단계가 코드를 다시 안 뒤지도록 **여기서 미리 채운다**(속도). `note` 규칙: fgdw 계정/비번=`fgdw`(배포 시 공용계정 자동치환), 난수 자동생성 대상(JWT_SECRET 등)=`secret-gen`, 사람이 정할 값/외부 자격증명=`ask`, NEXT_PUBLIC_*·VITE_* 공개주소=`public-url`, 그 외 일반값=`''`. 분류 기준은 `references/env-resolve.md`(deploy 와 동일 규칙)와 owasp/framework 점검 결과를 그대로 반영한다.
   - **`scope` = 4)에서 `deploy-readiness.md §8`(Dockerfile COPY 앵커)로 판정한 결과를 각 항목에 적는다.** 컨테이너 안(빌드+런타임)에서 쓰이면 `"container"`, 배포 컨테이너에 안 들어가는 코드(로컬 ETL·갱신 스크립트, 예 `scripts/fgdw/*.cjs`·`refresh.ps1`)만 쓰면 `"local"`. **기본값은 `container`** — 판정이 불확실하거나 §8 절차를 적용 안 했으면 `"container"` 로 두거나 생략한다(생략 = container, 하위호환). `scope` 는 `class`/`note` 와 직교다(class/note 는 컨테이너 안 처리 방식, scope 는 컨테이너 안/밖). **보수적 편향:** 런타임/빌드 env 를 `local` 로 오판하면 앱이 크래시(치명)하므로, `"local"` 은 Dockerfile 상 컨테이너 밖임이 확실할 때만. **`VITE_*`/`NEXT_PUBLIC_*` 는 빌드타임이라 항상 `container`**(local 금지 — 빌드 깨짐).
   - `branch` 도 함께 적어, deploy 가 브랜치를 재확인하지 않게 한다(deploy.sh 가 자체 해석도 하지만 기록을 남긴다).
