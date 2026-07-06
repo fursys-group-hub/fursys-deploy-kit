@@ -88,14 +88,37 @@ const bySev = (a, b) => (sevRank[a.severity] ?? 9) - (sevRank[b.severity] ?? 9);
 const auto = [];     // 자동수정 대상
 const manual = [];   // 사람 판단 필요(안내만)
 
-// (item58) 중복 카운트 방지 — 엔진 finding 이 잡은 (파일)을 deploy_fixes 가 다시 세지 않게.
-// security-review 가이드는 "엔진이 잡은 건 deploy_fixes 에 중복 기재 마라"이지만(라운드5),
-// 실제로 sec-llm 이 같은 파일의 같은 문제를 또 적어 "자동수정 5개"로 부풀던 사례(sidiz)가 있었다.
-// 방어적으로 엔진 finding 의 파일 경로를 모아, 같은 파일을 가리키는 deploy_fixes 는 스킵한다.
-// (파일 없는 finding(null)은 dedup 키에 넣지 않는다 — 오버매칭 방지.)
-const engineFindingFiles = new Set(
-  findings.filter((f) => f && typeof f === "object" && f.file).map((f) => f.file),
-);
+// (item58 + R9-item3/C-new-2) 중복 카운트 방지 — 엔진 finding 이 잡은 문제를 deploy_fixes 가
+// 다시 세지 않게. item58 은 "파일 경로만"으로 dedup 했는데(sidiz 부풀림 방지), 그게 과하게
+// 삼켜 **같은 파일·다른 줄·다른 문제**인 sec-llm 항목까지 통째로 누락시켰다(C-new-2:
+// web_app.py:16 secret_key(엔진) vs web_app.py:786 localhost 승인링크(sec-llm) — 둘 다 잡아야
+// 하는데 localhost 가 빠짐). → dedup 키를 **파일+줄**로 정밀화한다. 파일에 줄 없는(null)
+// 엔진 finding(파일 전체 대상: git-history·서비스계정키 등)만 그 파일 전체를 dedup 대상으로 본다.
+const engineByFile = new Map(); // file -> { lines:Set<number>, hasFileWide:boolean }
+for (const f of findings) {
+  if (!f || typeof f !== "object" || !f.file) continue;
+  const e = engineByFile.get(f.file) || { lines: new Set(), hasFileWide: false };
+  if (f.line == null) e.hasFileWide = true;
+  else e.lines.add(f.line);
+  engineByFile.set(f.file, e);
+}
+// sec-llm 항목이 엔진 finding 과 정말 같은 문제인가(중복)를 파일+줄로 판정.
+function isEngineDuplicate(d) {
+  if (!d.file) return false;
+  const e = engineByFile.get(d.file);
+  if (!e) return false;
+  if (e.hasFileWide) return true; // 엔진이 파일 전체를 잡았으면 같은 파일 sec-llm 은 중복
+  if (d.line != null && e.lines.has(d.line)) return true; // 같은 줄만 중복
+  return false; // 같은 파일·다른 줄(또는 줄 미상)은 별개 문제 — 유지(C-new-2 회귀 방지)
+}
+
+// (R9-item3) 오탐 의심(휴리스틱) finding 은 자동수정 목록에 남기되 "사람 재확인 권장"으로 표기한다.
+// 변수명/엔트로피 기반 추정(High-Entropy String / Suspicious Var Name + Long Literal)은
+// 파일경로·해시·안내문구를 시크릿으로 오탐할 수 있어(B-NEW-J), 기계적 자동적용 전에 사람이
+// 파일을 열어 확인하도록 유도한다(엔진 결정적 규칙 SEC-01~14 는 신뢰도 높아 제외).
+function isHeuristicRule(rule) {
+  return /high-entropy string|suspicious var name/i.test(String(rule || ""));
+}
 
 for (const f of findings) {
   if (!f || typeof f !== "object") continue;
@@ -107,14 +130,14 @@ for (const f of findings) {
     (f.file && askNames.has(f.file)) ? "ask" : null;
   const item = { sev, loc, type: f.rule || "-", message: f.message || "" };
   if (reasonManual) { item.reason = reasonManual; manual.push(item); }
-  else auto.push(item);
+  else { if (isHeuristicRule(f.rule)) item.recheck = true; auto.push(item); }
 }
 // (deployfix2) 배포준비 문제(deploy_fixes) — aiPrompt 있으면 자동수정, 없으면 안내만.
 for (const d of deployFixes) {
   if (!d || typeof d !== "object") continue;
-  // (item58) 엔진 finding 이 이미 잡은 파일의 보안 항목이면 중복 → 스킵(카운트 부풀림 방지).
-  //   sec-llm(보안 심화)만 dedup 대상 — copy-public/port 등 배포준비 타입은 엔진과 무관하니 유지.
-  if (d.type === "sec-llm" && d.file && engineFindingFiles.has(d.file)) continue;
+  // (item58 + C-new-2) 엔진 finding 과 같은 파일·같은 줄(또는 파일 전체 대상)인 보안 항목이면
+  //   중복 → 스킵. sec-llm(보안 심화)만 dedup 대상 — copy-public/port 등 배포준비 타입은 유지.
+  if (d.type === "sec-llm" && isEngineDuplicate(d)) continue;
   const sev = SEV_KO[d.severity] || d.severity || "높음";
   const loc = d.file || (d.type ? `(${d.type})` : "-");
   const item = { sev, loc, type: d.type || "배포 준비", message: d.message || "" };
@@ -145,7 +168,10 @@ if (auto.length === 0) {
   out.push("✅ 자동으로 고칠 수 있는 문제: 없음");
 } else {
   out.push(`✅ 제가 자동으로 고칠 수 있는 문제: ${auto.length}개`);
-  for (const it of auto) out.push(`   · [${it.sev}] ${it.loc} — ${it.type}: ${it.message}`);
+  for (const it of auto) {
+    const tag = it.recheck ? " (⚠️ 사람 재확인 권장 — 실제 비밀이 아닐 수 있어요: 파일 경로·해시·문구)" : "";
+    out.push(`   · [${it.sev}] ${it.loc} — ${it.type}: ${it.message}${tag}`);
+  }
 }
 out.push("");
 if (manual.length > 0) {

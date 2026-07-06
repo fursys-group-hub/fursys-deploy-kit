@@ -15,6 +15,7 @@
 8. 공통 — Dockerfile 점검 (모든 프레임워크 공통)
 9. Flask (엔진은 `unknown`/Python 으로 감지 — Python 앱이면 함께 본다)
 10. Firebase / 외부 PaaS 의존 (사내 부적합 — 차단)
+11. Express / 일반 Node 백엔드 (`express`/`node`)
 
 > **엔진 0토큰 탐지와의 연계(라운드5):** 아래 보안 점검 중 일부는 이제 `fdh-engine` 이 결정적으로 잡아 `_engine.json` finding 으로 올린다 — 중복으로 다시 finding 을 만들지 말고(엔진이 정본), 엔진이 못 잡은 결만 LLM 으로 더한다.
 > - `VITE_*`/`NEXT_PUBLIC_*`/`REACT_APP_*` 에 시크릿(이름이 SECRET/API_KEY/TOKEN/PASSWORD/PRIVATE_KEY, 또는 값이 AWS키·PEM·sk-·JWT) → 엔진 **치명**(`Secret in Build-time Variable`). 빌드 번들 노출.
@@ -172,8 +173,8 @@ CMD ["node", "server.js"]
 - 포트: 정적 서버 포트(nginx 80 등)와 Dockerfile `EXPOSE` 일치.
 - 시작 방법: 멀티스테이지(빌드 → nginx/serve 로 복사) Dockerfile 권장. 운영 빌드에서 source map 비노출 권장.
 
-#### ②-1. nginx custom conf + `localhost` HEALTHCHECK = IPv6 불일치로 롤백 (item66 — 정적/nginx 공통 함정)
-> Vite→nginx 뿐 아니라 **순수 정적 HTML 을 nginx:alpine 으로 서빙하는 모든 앱** 공통이다.
+#### ②-1. `localhost` HEALTHCHECK = IPv6(`::1`) 불일치로 롤백 (item66 + R9-5 — nginx·정적, 그리고 모든 서버 앱 공통)
+> Vite→nginx 뿐 아니라 **순수 정적 HTML 을 nginx:alpine 으로 서빙하는 모든 앱**, 그리고 **`0.0.0.0`(IPv4)로 바인딩하는 모든 서버 앱**(Node/Express·Python uvicorn·Go 등 — 그쪽은 §8 공통 규칙에서도 다룬다) 공통이다.
 
 **증상:** 빌드·서빙은 정상인데 **HEALTHCHECK 자가진단만 실패** → Coolify 가 컨테이너를 unhealthy 로 보고 10회 재시도 후 **롤백**(신규 앱은 되돌릴 이전 컨테이너가 없어 결국 **404**). status.sh 가 잠깐 RUNNING 을 줬어도 실제로는 롤백된다.
 
@@ -203,7 +204,7 @@ if [ -n "$CONF" ] && ! grep -rqE 'listen\s+\[::\]' $CONF 2>/dev/null; then
   grep -qiE 'HEALTHCHECK.*localhost' Dockerfile && echo "WARN: nginx custom conf 에 listen [::]:80 없음 + HEALTHCHECK localhost → IPv6 불일치로 롤백 위험(127.0.0.1 로 바꾸거나 listen [::]:80 추가)"
 fi
 ```
-→ 자동수정(`type:"nginx-healthcheck"`): HEALTHCHECK 의 `localhost`→`127.0.0.1` **한 줄 치환**(가장 안전·최소), 그리고 custom conf 가 있으면 `listen [::]:80;` 동반 추가. 빌드·서빙 로직은 안 건드린다.
+→ 자동수정(`type:"healthcheck-ipv4"` — 구 `nginx-healthcheck` 포함): HEALTHCHECK 의 `localhost`→`127.0.0.1` **한 줄 치환**(가장 안전·최소·프레임워크 무관), 그리고 nginx custom conf 가 있으면 `listen [::]:80;` 동반 추가(Node/일반 서버 앱은 conf 가 없으니 한 줄 치환만으로 끝). 빌드·서빙 로직은 안 건드린다.
 
 ---
 
@@ -282,8 +283,29 @@ fi
 - `COPY .` 시 `.dockerignore` 에 `.env`, `.git`, `node_modules` 가 포함됐는지(시크릿/불필요 파일 유입 방지). **(item54) `node_modules/` 가 `.dockerignore` 에 없으면 특히 위험:** `RUN npm install`(또는 `npm ci`)로 컨테이너 안(linux)에 맞는 의존성을 설치한 뒤 `COPY . .` 가 **로컬(예: Windows/mac) node_modules 를 덮어써** 네이티브 바이너리 불일치·플랫폼 오류로 런타임 크래시가 난다. Node 앱은 `.dockerignore` 에 `node_modules` 가 **반드시** 있어야 한다 — 없으면 **높음**. 없으면 자동수정으로 `.dockerignore` 에 `node_modules`(+`.env`·`.git`) 한 줄씩 추가.
 - `ENV` 로 시크릿을 직접 박지 않았는지(반드시 런타임 주입).
 - `EXPOSE` 포트가 앱 실제 포트·사내 서버 설정과 일치하는지.
-- `HEALTHCHECK` 정의 권장.
+- `HEALTHCHECK` 정의 권장. **(item R9-5 — 모든 서버 프레임워크 공통) HEALTHCHECK 는 `localhost` 대신 `127.0.0.1`(IPv4 명시)로 쓴다.** 앱이 `0.0.0.0`(IPv4 전용)으로 바인딩하는데(Node `app.listen(PORT,'0.0.0.0')`·Python uvicorn/gunicorn `--host 0.0.0.0`·Go 등) HEALTHCHECK 가 `wget/curl http://localhost/` 면, alpine 의 `localhost` 가 `::1`(IPv6) 을 먼저 시도해 **연결 거부 → unhealthy → Coolify 롤백 → 신규 앱 404**(빌드·서빙은 정상, 자가진단만 실패 — fursys-import 실사례). **`0.0.0.0` 바인딩 + HEALTHCHECK `localhost` 조합이면 높음** → `127.0.0.1` 로 한 줄 교정(자동수정 `type:"healthcheck-ipv4"`). 앱이 이미 IPv6 도 듣거나 HEALTHCHECK 가 이미 `127.0.0.1`/`[::1]` 이면 정상(오탐 가드). nginx 정적 케이스는 §4 ②-1(custom conf `listen [::]:80` 동반)로, 그 외 서버 앱은 여기 공통 규칙으로 본다. 탐지 grep 은 `../security-review/references/deploy-readiness.md` §5-1(B).
 - **(Node/npm 계열 공통 — Next.js·NestJS 등) 빌드 단계에서 `NODE_ENV=production` 으로 의존성을 설치하지 않았는지.** 빌드 도구가 `devDependencies` 에 있으면 스킵되어 빌드가 실패한다. `ENV NODE_ENV=production` 은 실행(runner) 스테이지에서만 두고, 설치/빌드 스테이지에는 두지 않는다. (상세·탐지 grep·정준 Dockerfile 골격은 Next.js ②-1/②-2 참조.)
+
+---
+
+## 11. Express / 일반 Node 백엔드 (`express` / `node`) — (item53)
+
+> 엔진이 `package.json` 의존성으로 감지한다: `express` → `express`, `fastify`/`koa`/`hapi`/`restify` → `node`, 서버 프레임워크 의존성은 없지만 소스에 `http.createServer(...).listen()` / `app.listen()` 같은 서버 기동이 보이면 `node`. (이전엔 이 앱들이 `unknown` 으로 잡혀 프레임워크별 안내가 비었다 — 배포는 됐으나 점검이 얕았다.) **next/nest/vite 가 우선**하므로(Nest·Next 는 내부적으로 express 를 쓰지만 각자 값으로 잡힘) 이 섹션은 순수 Express/Node 서버에만 적용된다.
+
+### ① 보안 점검
+- **정적 서빙 루트: `express.static(".")`/`express.static(__dirname)` 금지 — 서버 루트 전체(소스·`.env`·설정)가 URL 로 노출된다.** 전용 폴더(`express.static("public")`)로 좁힌다. (Flask `static_folder="."`·FastAPI `StaticFiles(directory=".")` 와 같은 함정.)
+- **시크릿 폴백 하드코딩 금지:** `process.env.SESSION_SECRET || "dev-secret"` 같은 폴백 리터럴 금지(세션·JWT 서명 위조 위험). 부재 시 부팅 실패(fail-fast). (엔진이 `Hardcoded Secret Fallback` 으로 잡으니 중복 finding 만들지 말 것.)
+- **CORS:** `cors()` 를 옵션 없이 전역 적용하면 `Access-Control-Allow-Origin: *` — origin 화이트리스트로 좁힌다. 자격증명(`credentials:true`) + `*` 조합은 특히 위험.
+- **`helmet` 등 기본 보안 헤더**, body-parser 크기 제한, 사용자 입력 → SQL(파라미터 바인딩)·`child_process`(쉘 주입)·경로조작 점검.
+- `app.listen(PORT, "0.0.0.0")` 자체는 컨테이너 배포에 필요(아래 ②) — 보안 문제 아님.
+
+### ② 사내 서버 배포 요건
+- 포트: `app.listen(<포트>)` 값과 Dockerfile `EXPOSE`·사내 서버 설정 일치. 포트는 `process.env.PORT` 로 받는 게 안전.
+- 바인딩: `app.listen(PORT, "0.0.0.0")` 로 컨테이너 외부 접속 허용(`localhost`/`127.0.0.1` 바인딩이면 컨테이너 밖에서 못 붙는다).
+- **HEALTHCHECK 는 `127.0.0.1`(IPv4) 로 — §8 공통 규칙(item R9-5) 적용.** `0.0.0.0` 바인딩 + `HEALTHCHECK localhost` 조합은 alpine 에서 `::1`(IPv6) 우선 시도로 롤백을 부른다(자동수정 `type:"healthcheck-ipv4"`).
+- `.dockerignore` 에 `node_modules` 필수(§8 item54) — `RUN npm install` 후 `COPY . .` 가 로컬 node_modules 를 덮어 네이티브 바이너리 불일치 크래시.
+- 시작 방법: `CMD ["node","server.js"]`(또는 `npm start`). ts-node 같은 개발 실행기 대신 빌드 산출물(`node dist/…`) 권장.
+- 의존성: `package.json`/lock 이 이미지 빌드에 설치되는지(§1 Next.js ②-1 의 `npm install` vs `npm ci` 주의 동일 적용).
 
 ---
 

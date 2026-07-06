@@ -13,11 +13,13 @@
 3. 시작 방법(ENTRYPOINT/CMD/start) 존재
 4. 필수 실행 설정값(env) 누락
 4-1. 영속 볼륨 필요 감지 (단일 서비스 — `volumes_plan`)
-5. HEALTHCHECK 권장
+4-2. 볼륨 경로가 코드 WORKDIR 과 겹치면 안 됨 (재배포 코드 미반영 근본원인)
+5. HEALTHCHECK 권장 (+ localhost→IPv6 불일치 함정 — nginx·Node 공통)
 6. 설정값 종류 분류 (빌드 포함 / 일반 / 잠금)
 7. 배포가능 축 판정 규칙
 8. 설정값이 컨테이너 안인가 로컬 도구 전용인가 (scope 판정 — Dockerfile 앵커)
 9. 런타임 접속 대상 점검 (localhost 하드코딩 · 정적 배포에서 깨지는 내부 API 의존)
+10. 응답 헤더 비-ASCII 리터럴 (런타임 env 주입 후에만 터지는 500 — 배포 전 grep 경고)
 
 ---
 
@@ -118,7 +120,7 @@ grep -rnoE "(fs\.(writeFileSync|writeFile|appendFileSync|createWriteStream)|json
 - **SQLite 사용**(`better-sqlite3`/`sqlite3`/`DB_PATH=/dir/...`) + DB 파일 경로가 디렉터리 아래(`*.db`) — 그 **상위 디렉터리**가 후보(예: `DB_PATH=/data/memos.db` → `/data`).
 - **업로드/저장 디렉터리 설정값**(`UPLOAD_DIR=/data/...` 등) — 그 디렉터리가 후보.
 - **(item49) 순수 파일 기반 상태저장** — `open(path,'w'|'a')`·`json.dump(..., open(...))`·`fs.writeFileSync`·`fs.createWriteStream` 등으로 **런타임에 데이터/상태 파일을 쓰는데 그 경로가 앱 디렉터리 안**(예 `data/results.json`·`state.db`)이면, 재배포 때 이미지가 새로 빌드돼 **그 파일이 초기화(유실)** 된다. → 그 파일이 쓰이는 **디렉터리**를 볼륨 후보로 잡는다(예 `data/`→컨테이너 경로 `/app/data` 또는 `/data`). **오탐 주의:** 로그 출력(`app.log`)·빌드 산출물(`dist/`)·`/tmp` 임시파일·읽기전용(`open(...,'r')`)은 후보 아님. **"사용자가 만든 업무 데이터를 유지해야 하나"** 로 LLM 이 판정(단순 캐시/임시는 제외).
-- **기록 규칙:** 후보 경로의 **상위 디렉터리**(파일 아님 — 예 `/data`)를 모아 중복 제거한다. 이 목록을 5-1(security-review SKILL)의 `volumes_plan` 에 적는다. 신호가 하나도 없으면 `volumes_plan` 은 생략하거나 `[]`(볼륨 미요청 — 현행 동일).
+- **기록 규칙:** 후보 경로의 **상위 디렉터리**(파일 아님 — 예 `/data`)를 모아 중복 제거한다. 이 목록을 5-1(security-review SKILL)의 `volumes_plan` 에 적는다. 신호가 하나도 없으면 `volumes_plan` 은 생략하거나 `[]`(볼륨 미요청 — 현행 동일). **⚠️ 후보 경로가 코드가 사는 WORKDIR·COPY 대상과 겹치면(예 `/app`·`/app/app`) 그대로 `volumes_plan` 에 넣지 말고 §4-2 로 — 볼륨이 코드를 덮어 재배포해도 최신 코드가 안 반영된다.**
 
 **non-root 권한 점검(단일 서비스에도 적용 — §1 의 멀티서비스 점검을 확장):** 볼륨 경로를 감지했으면, Dockerfile 이 `USER`(non-root) **앞에서** 그 경로를 `mkdir -p <경로> && chown <user> <경로>` 하는지 확인한다.
 ```bash
@@ -134,6 +136,50 @@ grep -niE '^\s*(USER|RUN .*mkdir|RUN .*chown)' Dockerfile 2>/dev/null
 
 ---
 
+## 4-2. ⚠️ 볼륨 경로가 코드 WORKDIR 과 겹치면 안 된다 (item R9-1 — claim-ansung 근본원인)
+
+**증상(치명급 마찰):** 재배포해도 **최신 코드가 반영 안 됨** — 새 이미지·새 컨테이너인데 앱 동작은 옛날 그대로. 여러 번 재배포해도 계속 옛것.
+
+**근본 원인:** 영속 볼륨을 **코드가 있는 경로(WORKDIR 또는 그 하위)** 에 마운트하면, 배포 때 이미지에 새로 빌드된 코드 위에 **옛 볼륨 스냅샷이 덮어씌워진다.** claim-ansung 은 `WORKDIR /app` + 코드가 `app/` 하위(`/app/app/main.py`)라 `BASE_DIR=/app/app`, DB·업로드가 전부 `/app/app` 하위 → `volumes_plan:["/app/app"]` 로 잡혀 **볼륨이 코드 디렉터리를 통째로 덮음.** 그래서 새 코드가 옛 볼륨 내용으로 가려졌다. (덤: 그 볼륨이 root 소유로 마운트돼 non-root 앱이 쓰기 실패 → 권한 크래시까지 겹친다.)
+
+**점검:** `volumes_plan`(또는 감지된 볼륨 후보) 경로가 Dockerfile 의 `WORKDIR` 이나 코드 COPY 대상과 겹치는지 본다.
+```bash
+WD="$(grep -iE '^WORKDIR' Dockerfile | tail -1 | awk '{print $2}')"   # 예 /app
+# 볼륨 후보 경로가 WORKDIR 과 같거나 그 하위면 위험 (예 /app, /app/app, /app/data)
+echo "WORKDIR=$WD ; 볼륨 후보가 이 경로(또는 하위)면 코드가 덮인다"
+```
+- 볼륨 후보가 **WORKDIR 자신 또는 그 하위**(코드가 실제 COPY 되는 경로)면 → **높음(재배포 시 코드 미반영·데이터/코드 혼재).**
+
+**수정(데이터 전용 경로로 분리 — 코드와 절대 안 겹치게):**
+1. **데이터 경로를 코드 밖(`/data`)으로 빼고 `DATA_DIR` env 로 주입한다.** 코드가 저장 위치를 하드코딩(`BASE_DIR/"claims.db"`)하지 말고 `os.environ.get("DATA_DIR", <로컬 기본>)` 를 읽게 한 뒤, DB·업로드를 `DATA_DIR` 하위로 옮긴다(claim-ansung 최종형):
+   ```python
+   DATA_DIR = Path(os.environ.get("DATA_DIR", str(BASE_DIR)))  # 로컬은 코드 옆, 배포는 /data
+   DB_PATH = DATA_DIR / "claims.db"
+   UPLOAD_DIR = DATA_DIR / "uploads"
+   ```
+   → `volumes_plan:["/data"]`(코드 밖) + `env_plan` 에 `DATA_DIR=/data`(runtime). 이러면 볼륨이 코드를 안 덮고, 재배포마다 최신 코드 + 보존 데이터가 공존한다.
+2. **non-root 면 그 볼륨 경로 권한을 앱 사용자에게 준다.** 빈 볼륨은 첫 마운트 시 **root 소유**로 붙어 non-root 앱이 못 쓴다(PermissionError). 두 방법:
+   - **(간단) Dockerfile 에서 `USER` 앞에 `RUN mkdir -p /data && chown <user> /data`** — 단, 이건 *이미지 안의 빈 디렉터리* 소유권만 바꾼다. Coolify/Docker 가 named volume 을 처음 만들 때 그 소유권을 복사하므로 대개 충분(§4-1 참조).
+   - **(런타임 확실) entrypoint 에서 `chown` 후 non-root 로 강등(gosu/su-exec).** 볼륨이 런타임에 root 로 마운트되는 환경에서 확실히 통한다(카멕이 claim-ansung 에 적용한 패턴): 컨테이너는 root 로 시작 → entrypoint 가 `chown -R <user> /data` → `exec gosu <user> <원래 CMD>` 로 권한을 낮춰 앱 실행.
+     ```dockerfile
+     # (예시 골격 — 볼륨이 런타임 root 마운트라 이미지 chown 만으론 부족할 때)
+     RUN apk add --no-cache su-exec    # 또는 gosu
+     COPY entrypoint.sh /entrypoint.sh
+     ENTRYPOINT ["/entrypoint.sh"]
+     CMD ["uvicorn","app.main:app","--host","0.0.0.0","--port","8000"]
+     ```
+     ```sh
+     #!/bin/sh
+     # entrypoint.sh
+     mkdir -p "${DATA_DIR:-/data}" && chown -R appuser "${DATA_DIR:-/data}"
+     exec su-exec appuser "$@"
+     ```
+- **자동수정 성격:** 저장 위치를 `DATA_DIR` 로 빼는 것은 **코드 몇 줄 + Dockerfile 변경**이라 침투적 → deploy-fix 는 **안내(복붙 프롬프트) 위주**로 하고 자동 일괄치환은 하지 않는다(저장 경로 로직은 앱마다 달라 오작동 위험). 이미 배포·운영 중인 앱이면 **데이터 유실 위험이 있으므로 반드시 사람이 판단**(볼륨 경로 변경은 기존 데이터 마이그레이션 동반).
+
+> **볼륨 경로 규칙 요약:** *영속 볼륨은 코드가 사는 곳(WORKDIR·COPY 대상)이 아니라, 코드와 겹치지 않는 데이터 전용 경로(`/data`)에만 건다.* (오피스 MEMORY [[coolify-redeploy-commit-pin]] 와 동일 결론.)
+
+---
+
 ## 5. HEALTHCHECK 권장 (+ nginx IPv6 불일치 함정)
 
 ```bash
@@ -142,15 +188,27 @@ grep -i 'HEALTHCHECK' Dockerfile
 
 - 없으면 **낮음(권장)** 으로만 표시(배포를 막지 않음). 화면 문구: "상태 점검(HEALTHCHECK)을 넣으면 배포 후 정상 여부를 더 정확히 확인할 수 있어요(권장)."
 
-### 5-1. nginx custom conf + `localhost` HEALTHCHECK = IPv6 불일치 롤백 (item66 — 있으면 높음)
-HEALTHCHECK 이 **있어도** nginx 정적 서버에서 `localhost` 를 쓰면 배포가 깨질 수 있다(빌드·서빙은 정상인데 healthcheck 자가진단만 실패 → Coolify 롤백 → 404). `nginx:alpine` 은 custom conf 를 쓰면 IPv6(`listen [::]:80`) 자동추가를 스킵하는데, alpine `localhost` 는 `::1`(IPv6) 을 먼저 시도해 연결 거부되기 때문이다.
+### 5-1. `localhost` HEALTHCHECK = IPv6(`::1`) 불일치 롤백 (item66 + R9-5 — nginx·Node 공통, 있으면 높음)
+HEALTHCHECK 이 **있어도** `wget/curl http://localhost/` 를 쓰면 배포가 깨질 수 있다(빌드·서빙은 정상인데 healthcheck 자가진단만 실패 → Coolify unhealthy 판정 → 롤백 → 신규 앱은 되돌릴 컨테이너가 없어 **404**). alpine 의 `localhost` 는 **`::1`(IPv6) 을 먼저** 시도하는데, 앱이 IPv6 를 안 듣고 있으면 연결 거부되기 때문이다. **두 갈래로 공통 발생:**
+- **정적/nginx**: `nginx:alpine` 은 custom conf 를 쓰면 IPv6(`listen [::]:80`) 자동추가를 스킵 → IPv4 만 청취.
+- **Node/Express·기타 서버(R9-5, fursys-import)**: 앱이 `app.listen(PORT, '0.0.0.0')`(또는 `'0.0.0.0'` 바인딩)이면 **IPv4 전용**으로 listen → HEALTHCHECK `localhost`(`::1`)가 리스너 없어 refused → 롤백. Python(uvicorn/gunicorn `--host 0.0.0.0`)·Go 등 `0.0.0.0` 바인딩 서버 전부 동일.
+
 ```bash
+# (A) nginx custom conf 케이스
 CONF="$(ls nginx.conf .nginx.conf default.conf 2>/dev/null; find . -maxdepth 2 -name '*.conf' -path '*nginx*' 2>/dev/null | head)"
 if [ -n "$CONF" ] && ! grep -rqE 'listen\s+\[::\]' $CONF 2>/dev/null; then
-  grep -qiE 'HEALTHCHECK.*localhost' Dockerfile && echo "WARN: nginx custom conf 에 listen [::]:80 없음 + HEALTHCHECK localhost → IPv6 불일치로 롤백 위험"
+  grep -qiE 'HEALTHCHECK.*localhost' Dockerfile && echo "WARN(nginx): custom conf 에 listen [::]:80 없음 + HEALTHCHECK localhost → IPv6 불일치 롤백 위험"
+fi
+# (B) 범용: 앱이 0.0.0.0(IPv4)로 바인딩하는데 HEALTHCHECK 가 localhost 면 위험 (Node/Python/Go 공통)
+if grep -qiE 'HEALTHCHECK.*localhost' Dockerfile 2>/dev/null; then
+  grep -rqE "listen\([^)]*['\"]0\.0\.0\.0['\"]|--host[= ]+0\.0\.0\.0|['\"]0\.0\.0\.0['\"]" . \
+    --include='*.js' --include='*.ts' --include='*.mjs' --include='*.cjs' --include='*.py' --include='Dockerfile' 2>/dev/null \
+    | grep -viE '/(node_modules|\.venv|dist|build)/' | head -1 >/dev/null \
+    && echo "WARN(app): 앱이 0.0.0.0(IPv4) 바인딩 + HEALTHCHECK localhost → ::1 refused 롤백 위험(127.0.0.1 로 바꿔야 함)"
 fi
 ```
-- 해당하면 **높음**(배포 후 롤백→404). 화면 문구: "상태 점검이 앱에 접속하지 못해 **배포가 되돌려질 수 있어요(롤백).** 점검 주소를 `127.0.0.1` 로 바꾸면 돼요." 자동수정 `type:"nginx-healthcheck"`(HEALTHCHECK `localhost`→`127.0.0.1` 한 줄 + custom conf 에 `listen [::]:80` 동반) — 상세는 `framework-rules.md` §4 ②-1.
+- 해당하면 **높음**(배포 후 롤백→404). 화면 문구: "상태 점검이 앱에 접속하지 못해 **배포가 되돌려질 수 있어요(롤백).** 점검 주소를 `127.0.0.1` 로 바꾸면 돼요." 자동수정 `type:"healthcheck-ipv4"`(구 `nginx-healthcheck` 포함 — HEALTHCHECK `localhost`→`127.0.0.1` 한 줄 + nginx custom conf 면 `listen [::]:80` 동반) — 상세는 `framework-rules.md` §4 ②-1.
+- **오탐 가드:** 앱이 이미 IPv6 도 듣거나(`listen('::')`·`listen [::]`), HEALTHCHECK 가 이미 `127.0.0.1`/`[::1]` 이면 경고 안 함. `0.0.0.0` 바인딩 + `localhost` HEALTHCHECK 조합일 때만 높음.
 
 ---
 
@@ -250,3 +308,30 @@ grep -rnoE "(fetch|axios(\.(get|post|put|delete|patch))?|XMLHttpRequest)[^\n]{0,
 - **#51(IS_FURSYS 호스트분기)·#65(외부 SaaS 직접의존)·Supabase 직접호출도 같은 계열**(브라우저가 배포 환경에 없는 대상에 접속) — 그쪽은 `framework-rules.md` §10(외부 PaaS) 로, 이 §9 는 **내부/localhost 접속 대상**을 다룬다.
 
 > **§9 는 verdict 를 막지 않는다(§7 불변).** localhost 하드코딩·정적배포 API 의존은 "높음(기능 경고)"으로 리포트에 표시하되, Dockerfile/포트/시작/필수env 같은 배포가능 축 결정 항목은 아니다. 사용자가 "기능 일부 깨져도 겉은 뜬다"는 걸 배포 전에 알게 하는 게 목적이다(iloomscm 처럼 겉은 200 인데 특정 페이지 기능 불가 — 사후 혼란 방지).
+
+---
+
+## 10. 응답 헤더에 비-ASCII 리터럴 (item R9-4 / G-new-9 — 런타임 env 주입 후에만 터지는 500)
+
+**증상(치명급 카테고리):** 보안 검토·배포가능성 다 통과했는데 **배포 직후 첫 접속부터 500.** 로컬 개발에선 멀쩡했다.
+
+**근본 원인 — "정적 검증이 못 잡는, 런타임에만 열리는 코드 경로":** HTTP **응답 헤더 값**에는 latin-1 로 인코딩 안 되는 문자(한글 등)를 넣으면 서버(Starlette/Express 등)가 헤더를 만들 때 `UnicodeEncodeError` 로 500 을 낸다. 위험한 건 이 경로가 **평소엔 실행 안 되다가 배포 후 env 가 채워질 때 처음 열리는** 유형이다(review-guide-checker):
+- `WWW-Authenticate: Basic realm="체험단 검수 도구"`(한글 realm) → 로컬은 `APP_PASSWORD` 미설정이라 인증 미들웨어가 우회돼 이 줄이 **한 번도 실행 안 됨.** 배포 때 `env_plan` 대로 `APP_PASSWORD` 를 처음 채우면 인증 분기가 활성화 → 첫 무인증 요청에서 즉시 500.
+- `Content-Disposition: attachment; filename*=UTF-8''파일명_검수이력.xlsx`(퍼센트 인코딩 없는 한글 파일명) → 그 다운로드 라우트를 처음 호출할 때 500.
+
+**→ deploy-check 가 응답 헤더에 들어가는 문자열 리터럴을 grep 해 비-ASCII 포함 여부를 배포 전에 경고**하면 "env 채워지면 터지는" 사고를 예방할 수 있다(정적으로 값이 안 채워져 있어도 리터럴은 코드에 보인다).
+```bash
+# 응답 헤더 딕셔너리/설정에 들어가는 문자열 중 비-ASCII(한글 등) 포함 라인
+# (headers={...}·set_header·WWW-Authenticate·Content-Disposition 조합)
+grep -rnE "(headers\s*[=:]\s*[\{\(]|WWW-Authenticate|Content-Disposition|set_header|setHeader|add_header|Response\([^)]*headers)" . \
+  --include='*.py' --include='*.js' --include='*.ts' --include='*.mjs' --include='*.cjs' 2>/dev/null \
+  | grep -viE '/(node_modules|\.venv|dist|build|tests?|fixtures?)/' \
+  | perl -ne 'print if /[^[:ascii:]]/' | head -20
+```
+> 비-ASCII 필터는 `grep -P '[^\x00-\x7F]'` 가 일부 환경(Windows Git Bash 로케일)에서 `-P supports only unibyte and UTF-8 locales` 로 실패한다 → **`perl -ne 'print if /[^[:ascii:]]/'`** 로 거른다(POSIX·이식성). perl 이 없으면 `awk '/[\x80-\xff]/'`(gawk) 대체.
+- 헤더 값에 비-ASCII 가 보이면 → **높음(배포 후 500 위험)**. 화면 문구: "응답 헤더에 한글이 들어가 있어요 — 배포 후 특정 요청에서 **500 오류**가 날 수 있어요(헤더는 영문/ASCII 만 가능). realm 이름은 영문으로, 파일명은 퍼센트 인코딩(`quote()`)으로 바꿔야 해요."
+- **자동수정 성격:** ① `realm="한글"` → 영문 라벨로(값 자체는 표시용이라 안전). ② `Content-Disposition` 파일명은 `urllib.parse.quote(name)`(Python)/`encodeURIComponent`(JS) + ASCII 폴백 파일명 병기(RFC 6266/5987). **응답 바디(body/content)의 한글은 문제 없음**(latin-1 제약은 헤더에만) — 바디는 건드리지 않는다.
+- **오탐 가드:** 응답 **바디**(`content=`·`body=`·`res.send(...)`)의 한글, 주석·로그 문자열, 요청(request) 헤더 읽기는 대상 아님. **응답 헤더 값으로 조립되는 리터럴**일 때만 경고(위 grep 은 헤더 조합 앵커로 좁힘 — LLM 이 실제 헤더값인지 최종 확인).
+- **연계:** 예외 은폐 구조(인증 미들웨어가 다운스트림까지 try/except 로 감싸 이 500 을 401 로 위장) 는 `owasp-checklist.md` §1-16(안내성) 참조 — 원인 추적을 사실상 불가능하게 만든다. 이 §10 은 그 **원인(헤더 한글)** 을, §1-16 은 그 **증상 은폐** 를 각각 다룬다.
+
+> **§10 은 verdict 를 막지 않는 "배포 후 오류 예고"**(§9 와 동급 — 기능/런타임 경고). 다만 500 은 앱 전체를 죽일 수 있어 **높음**으로 표시하고 배포 전 수정을 강권한다.
