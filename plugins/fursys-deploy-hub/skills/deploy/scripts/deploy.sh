@@ -21,6 +21,12 @@
 #                          버퍼링/EOF 레이스가 없다). 호출측이 mktemp 로 0600 파일에 써서 넘긴다
 #                          → 시크릿이 argv·프로세스 목록·stdout 에 남지 않는다.
 #
+#   서버 선택 옵션 (선택 — 안 주면 첫 서버 + group.hub 도메인, 현행 100% 동일):
+#     --server <이름>           : 배포 대상 Coolify 서버 이름(대소문자 무시) 또는 uuid. /deploy2 가
+#                                 `coolify-oper-web-2` 로 준다. 값이 있으면 본문에 "server":"<값>" 을
+#                                 추가한다(미전송이면 필드 없음 → 현행 바이트 동일). 서버 지정 시 주소
+#                                 접미사가 group.hub 가 아니라 hub.fursys.com 이 되고, 예약 주소는 거부된다.
+#
 #   앱 식별 옵션 (선택 — 안 주면 app_id=repo 이름, 현행 100% 동일):
 #     --app <key>               : (#38) 명시 app 키. 같은 repo 를 subdomain(주소)만 바꿔 **별도 앱**으로
 #                                 배포할 때 준다(예: iloom-order-shortage 를 order/shortage 두 주소로).
@@ -51,6 +57,8 @@
 #     GATE_NO_VERDICT                409 error=no_verdict (서버 게이트 차단)
 #     GATE_BLOCKED                   409 error=verdict_blocked (서버 게이트 차단)
 #     BAD_REQUEST                    400 (repo/subdomain 누락 등)
+#     SERVER_UNKNOWN                 400 error=unknown_server (--server 이름/uuid 를 못 찾음)
+#     SUBDOMAIN_RESERVED             400 error=reserved_subdomain (서버 지정 시 예약 주소 앞부분 거부)
 #     PROXY_ERROR <http_code>        502 등 기타 오류
 #   부가정보로 응답 본문(warnings 포함)을 함께 출력하므로, 호출 측이 warnings 를 읽어 안내한다.
 set -uo pipefail
@@ -68,11 +76,12 @@ set +e
 REPO="${1:-}"; COMMIT="${2:-}"; TEAM="${3:-}"; SUBDOMAIN="${4:-}"; PORT="${5:-}"; ENV_ARG="${6:-}"
 # 위치 인자 6개를 소비한 뒤, 남은 인자에서 멀티서비스 옵션 플래그를 파싱한다.
 [ "$#" -ge 1 ] && shift "$(( $# < 6 ? $# : 6 ))"
-SERVICE=""; BASE_DIR=""; DOCKERFILE_LOC=""; VOLUMES=""; BRANCH=""; ENV_FILE=""; APP_KEY=""
+SERVICE=""; BASE_DIR=""; DOCKERFILE_LOC=""; VOLUMES=""; BRANCH=""; ENV_FILE=""; APP_KEY=""; SERVER=""
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --branch)         BRANCH="${2:-}"; shift 2 ;;
     --app)            APP_KEY="${2:-}"; shift 2 ;;
+    --server)         SERVER="${2:-}"; shift 2 ;;
     --service)        SERVICE="${2:-}"; shift 2 ;;
     --base-dir)       BASE_DIR="${2:-}"; shift 2 ;;
     --dockerfile-loc) DOCKERFILE_LOC="${2:-}"; shift 2 ;;
@@ -82,7 +91,7 @@ while [ "$#" -gt 0 ]; do
   esac
 done
 if [ -z "$REPO" ] || [ -z "$COMMIT" ] || [ -z "$TEAM" ] || [ -z "$SUBDOMAIN" ]; then
-  echo "USAGE deploy.sh <repo> <commit> <team> <subdomain> [port] [env_json] [--branch B] [--app K] [--service N] [--base-dir D] [--dockerfile-loc P] [--env-file F]" >&2
+  echo "USAGE deploy.sh <repo> <commit> <team> <subdomain> [port] [env_json] [--branch B] [--app K] [--server S] [--service N] [--base-dir D] [--dockerfile-loc P] [--env-file F]" >&2
   exit 2
 fi
 # 포트: 비었으면 3000(next 기본). 숫자만 허용(아니면 3000).
@@ -137,6 +146,7 @@ fdh_resolve_url || true
 BODY="$(printf '{"repo":"%s","commit":"%s","team":"%s","subdomain":"%s","branch":"%s","port":%s' \
   "$REPO" "$COMMIT" "$TEAM" "$SUBDOMAIN" "$BRANCH" "$PORT")"
 [ -n "$APP_KEY" ]        && BODY="$BODY$(printf ',"app":"%s"' "$APP_KEY")"
+[ -n "$SERVER" ]         && BODY="$BODY$(printf ',"server":"%s"' "$SERVER")"
 [ -n "$SERVICE" ]        && BODY="$BODY$(printf ',"service":"%s"' "$SERVICE")"
 [ -n "$BASE_DIR" ]       && BODY="$BODY$(printf ',"base_directory":"%s"' "$BASE_DIR")"
 [ -n "$DOCKERFILE_LOC" ] && BODY="$BODY$(printf ',"dockerfile_location":"%s"' "$DOCKERFILE_LOC")"
@@ -190,7 +200,15 @@ case "$HTTP" in
     # (CREATED/REDEPLOYED 를 받은 서비스는 "이미 만들어진 것" — 다시 POST 하지 않는다).
     exit 0
     ;;
-  400) echo "BAD_REQUEST"; printf '%s\n' "$JSON" ;;
+  400)
+    ERR="$(extract error)"
+    case "$ERR" in
+      unknown_server)     echo "SERVER_UNKNOWN" ;;
+      reserved_subdomain) echo "SUBDOMAIN_RESERVED" ;;
+      *)                  echo "BAD_REQUEST" ;;
+    esac
+    printf '%s\n' "$JSON"
+    ;;
   409)
     ERR="$(extract error)"
     case "$ERR" in
