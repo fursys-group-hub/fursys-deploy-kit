@@ -1,6 +1,6 @@
 # 🚀 배포가능성 점검 (사내 서버 단일 컨테이너 전제)
 
-> security-review 스킬이 "🚀 배포 가능성" 단계에서 쓰는 결정적(Bash) + 해석(LLM) 체크리스트다.
+> deploy-check 스킬이 "🚀 배포 가능성" 단계에서 쓰는 결정적(Bash) + 해석(LLM) 체크리스트다.
 > 사내 서버는 **레포 루트의 `Dockerfile` 로 단일 컨테이너를 빌드**해 배포한다. 이 전제를 충족하지
 > 못하면 보안이 통과여도 **배포 불가**다. (외부 호스팅·정적 자동빌드는 사내 정책상 다루지 않음 — 언급 금지.)
 >
@@ -120,7 +120,7 @@ grep -rnoE "(fs\.(writeFileSync|writeFile|appendFileSync|createWriteStream)|json
 - **SQLite 사용**(`better-sqlite3`/`sqlite3`/`DB_PATH=/dir/...`) + DB 파일 경로가 디렉터리 아래(`*.db`) — 그 **상위 디렉터리**가 후보(예: `DB_PATH=/data/memos.db` → `/data`).
 - **업로드/저장 디렉터리 설정값**(`UPLOAD_DIR=/data/...` 등) — 그 디렉터리가 후보.
 - **(item49) 순수 파일 기반 상태저장** — `open(path,'w'|'a')`·`json.dump(..., open(...))`·`fs.writeFileSync`·`fs.createWriteStream` 등으로 **런타임에 데이터/상태 파일을 쓰는데 그 경로가 앱 디렉터리 안**(예 `data/results.json`·`state.db`)이면, 재배포 때 이미지가 새로 빌드돼 **그 파일이 초기화(유실)** 된다. → 그 파일이 쓰이는 **디렉터리**를 볼륨 후보로 잡는다(예 `data/`→컨테이너 경로 `/app/data` 또는 `/data`). **오탐 주의:** 로그 출력(`app.log`)·빌드 산출물(`dist/`)·`/tmp` 임시파일·읽기전용(`open(...,'r')`)은 후보 아님. **"사용자가 만든 업무 데이터를 유지해야 하나"** 로 LLM 이 판정(단순 캐시/임시는 제외).
-- **기록 규칙:** 후보 경로의 **상위 디렉터리**(파일 아님 — 예 `/data`)를 모아 중복 제거한다. 이 목록을 5-1(security-review SKILL)의 `volumes_plan` 에 적는다. 신호가 하나도 없으면 `volumes_plan` 은 생략하거나 `[]`(볼륨 미요청 — 현행 동일). **⚠️ 후보 경로가 코드가 사는 WORKDIR·COPY 대상과 겹치면(예 `/app`·`/app/app`) 그대로 `volumes_plan` 에 넣지 말고 §4-2 로 — 볼륨이 코드를 덮어 재배포해도 최신 코드가 안 반영된다.**
+- **기록 규칙:** 후보 경로의 **상위 디렉터리**(파일 아님 — 예 `/data`)를 모아 중복 제거한다. 이 목록을 5-1(deploy-check SKILL)의 `volumes_plan` 에 적는다. 신호가 하나도 없으면 `volumes_plan` 은 생략하거나 `[]`(볼륨 미요청 — 현행 동일). **⚠️ 후보 경로가 코드가 사는 WORKDIR·COPY 대상과 겹치면(예 `/app`·`/app/app`) 그대로 `volumes_plan` 에 넣지 말고 §4-2 로 — 볼륨이 코드를 덮어 재배포해도 최신 코드가 안 반영된다.**
 
 **non-root 권한 점검(단일 서비스에도 적용 — §1 의 멀티서비스 점검을 확장):** 볼륨 경로를 감지했으면, Dockerfile 이 `USER`(non-root) **앞에서** 그 경로를 `mkdir -p <경로> && chown <user> <경로>` 하는지 확인한다.
 ```bash
@@ -240,7 +240,7 @@ fi
 
 ## 8. 설정값이 컨테이너 안인가 로컬 도구 전용인가 (scope 판정 — Dockerfile 앵커)
 
-설정값(env) 중에는 **배포 컨테이너에 아예 안 들어가는 코드**(로컬 ETL·자료 갱신 스크립트, 예 `scripts/fgdw/*.cjs`·`refresh.ps1`)만 쓰는 것이 있다. 이런 값은 배포에 필요 없으므로 deploy 가 묻지도·주입하지도 않아야 한다. 그 구분을 여기서 **Dockerfile COPY 앵커**로 판정해 각 env 에 `scope`(`container`/`local`)를 부여한다. 결과는 5-1(security-review SKILL)의 `env_plan[].scope` 에 적는다.
+설정값(env) 중에는 **배포 컨테이너에 아예 안 들어가는 코드**(로컬 ETL·자료 갱신 스크립트, 예 `scripts/fgdw/*.cjs`·`refresh.ps1`)만 쓰는 것이 있다. 이런 값은 배포에 필요 없으므로 deploy 가 묻지도·주입하지도 않아야 한다. 그 구분을 여기서 **Dockerfile COPY 앵커**로 판정해 각 env 에 `scope`(`container`/`local`)를 부여한다. 결과는 5-1(deploy-check SKILL)의 `env_plan[].scope` 에 적는다.
 
 > **`scope` 와 `class`/`note` 는 직교다.** `class`(build/runtime/locked)·`note`(fgdw/ask 등) = *컨테이너 안에서* 그 env 를 어떻게 다루나. `scope` = *컨테이너 안에 들어가나(빌드+런타임), 로컬 도구 전용이나.* 둘을 합치지 말 것. **기본값은 `container`**(생략 = container, 하위호환).
 

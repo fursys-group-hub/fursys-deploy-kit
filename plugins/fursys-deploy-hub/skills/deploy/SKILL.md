@@ -7,7 +7,7 @@ description: 사내 서버에 자기 앱을 처음으로 생성·올린다. **�
 
 ## 역할 경계 (먼저 확인)
 - 너는 **실제로 올리는("배포해줘/올려줘/deploy")** 요청만 처리한다.
-- **"배포 가능한지/배포해도 되는지 검토·점검·확인", "다시 검토", "배포 준비 됐는지"** 같은 **검토 요청은 너의 일이 아니라 `security-review`(배포 전 검토) 스킬의 일**이다. 이때는 직접 Bash로 점검해 텍스트로 답하지 말고, **배포 전 검토를 안내·위임**한다("'배포 전 검토 해줘'(또는 `/deploy-check`)라고 하시면 보안+배포가능성을 점검해 리포트로 알려드려요"). 검토는 `.md` 리포트를 남기지만 인라인 점검은 리포트를 남기지 못한다.
+- **"배포 가능한지/배포해도 되는지 검토·점검·확인", "다시 검토", "배포 준비 됐는지"** 같은 **검토 요청은 너의 일이 아니라 `deploy-check`(배포 전 검토) 스킬의 일**이다. 이때는 직접 Bash로 점검해 텍스트로 답하지 말고, **배포 전 검토를 안내·위임**한다("'배포 전 검토 해줘'(또는 `/deploy-check`)라고 하시면 보안+배포가능성을 점검해 리포트로 알려드려요"). 검토는 `.md` 리포트를 남기지만 인라인 점검은 리포트를 남기지 못한다.
 - 배포 진행 중 Dockerfile 부재 등 막히는 점을 발견하면, 거기서 멈추고 **배포 전 검토로 리포트를 받아 고치도록** 안내한다.
 
 ## 비개발자 대화 원칙 (가장 중요 — 항상 지킬 것)
@@ -115,11 +115,11 @@ test -f .fursys-deploy-hub/services.json && echo HAS_MANIFEST || echo NO_MANIFES
 수집한 목록은 `deploy.sh` 의 `env_json` 으로 전달한다(값은 화면에 그대로 출력하지 않는다). 형식: `[{"key":"K","value":"V","class":"runtime|build|locked"}]`. 시크릿 값이 인자에 남지 않게 **표준입력(stdin)으로 전달**하는 것을 권장한다. 종류(`class`)는 위 규칙으로 **자동** 결정한다.
 
 ## ⑤ 배포 전 검토 게이트 — 로컬 빠른 확인 (UX용. 진짜 강제는 서버가 함)
-배포 전 검토(security-review)가 남긴 **검토 결과 파일**을 읽어, 통과한 코드만 올린다. 이 파일은 **빠른 실패(UX)용**이다 — 검토를 안 했거나 통과 못 한 걸 미리 잡아 헛수고(중복 생성·실패 재시도)를 막는다. **진짜 강제는 서버(중앙 배포 시스템)가 한다**: 서버는 등록된 검토 기록을 보고, 통과하지 못한 코드면 ⑥에서 `409`(`verdict_blocked`/`no_verdict`)로 거부한다(⑦ 참조). 그러니 이 파일이 없거나 미통과면 여기서 미리 멈춰 사용자를 돕는다. 프로젝트 루트의 `.fursys-deploy-hub/last-verdict.json` 을 읽는다:
+배포 전 검토(deploy-check)가 남긴 **검토 결과 파일**을 읽어, 통과한 코드만 올린다. 이 파일은 **빠른 실패(UX)용**이다 — 검토를 안 했거나 통과 못 한 걸 미리 잡아 헛수고(중복 생성·실패 재시도)를 막는다. **진짜 강제는 서버(중앙 배포 시스템)가 한다**: 서버는 등록된 검토 기록을 보고, 통과하지 못한 코드면 ⑥에서 `409`(`verdict_blocked`/`no_verdict`)로 거부한다(⑦ 참조). 그러니 이 파일이 없거나 미통과면 여기서 미리 멈춰 사용자를 돕는다. 프로젝트 루트의 `.fursys-deploy-hub/last-verdict.json` 을 읽는다:
 **① 커밋/푸시가 이 단계보다 먼저 끝나 있다(중요).** 그러므로 여기서 `COMMIT`/`HEAD_TREE` 는 **실제 배포될 커밋(현재 HEAD)** 기준이다.
 ```bash
 COMMIT=$(git rev-parse HEAD 2>/dev/null || echo null)
-# (treegate) 비교 트리는 검토측(security-review)이 tree 를 산출할 때와 **동일한 방식**(_fdh_tree)으로 만든다.
+# (treegate) 비교 트리는 검토측(deploy-check)이 tree 를 산출할 때와 **동일한 방식**(_fdh_tree)으로 만든다.
 #  배경: HEAD^{tree} 를 그대로 쓰면, 대상 repo 에 .gitattributes 가 없고 Windows autocrlf 면
 #  HEAD 의 blob(CRLF)과 검토측의 git add -A 재정규화(LF) blob 이 달라 tree 가 **항상 불일치** →
 #  내용 무변경인데도 게이트가 "코드 변경"으로 오판·차단한다(§6.1.1, CRLF 노이즈). 양쪽을 같은
@@ -149,7 +149,7 @@ test -f .fursys-deploy-hub/last-verdict.json && cat .fursys-deploy-hub/last-verd
 ## ⑤-1 검토 결과 서버 등록 (배포 게이트 입력 — 등록은 여기서 한다)
 배포 게이트는 **서버에 등록된 검토 기록**을 본다. 등록은 **배포 전 검토(deploy-check)가 아니라 이 단계에서** 한다 — 배포 키가 ②에서 이미 확보돼 있고, "배포" 맥락이라 외부 전송이 정상 처리되기 때문이다. ⑤에서 읽은 `last-verdict.json` 의 값과 검토가 남긴 산출물(`_engine.json` + 렌더된 `.md` 리포트)로 등록한다. **본문 JSON 을 손으로 쓰지 않는다 — 빌더가 산출물에서 기계 조립한다.** `--report-data` 에는 검토가 만든 **`.md` 리포트 파일**(`last-verdict.json` 의 `report` 경로, 보통 `.fursys-deploy-hub/security-report-<TS>.md`)을 넘긴다 — 빌더가 그 본문을 문자열로 읽어 싣고 board 가 마크다운으로 렌더한다.
 ```bash
-RR="$CLAUDE_PLUGIN_ROOT/skills/security-review"   # 안 잡히면: RR="$(find "$HOME/.claude/plugins" -path '*/fursys-deploy-hub/skills/security-review' -type d 2>/dev/null | head -1)"
+RR="$CLAUDE_PLUGIN_ROOT/skills/deploy-check"   # 안 잡히면: RR="$(find "$HOME/.claude/plugins" -path '*/fursys-deploy-hub/skills/deploy-check' -type d 2>/dev/null | head -1)"
 # <SEC>/<DEP>/<FIN> = ⑤에서 읽은 last-verdict.json 의 security / deployable / final 값 그대로
 # REPORT_MD = last-verdict.json 의 report 경로(렌더된 .md). 없으면 .fursys-deploy-hub 에서 최신 security-report-*.md 를 쓴다.
 REPORT_MD="$(grep -oE '"report"[[:space:]]*:[[:space:]]*"[^"]+"' .fursys-deploy-hub/last-verdict.json 2>/dev/null | sed -E 's/.*"report"[[:space:]]*:[[:space:]]*"([^"]+)".*/\1/')"

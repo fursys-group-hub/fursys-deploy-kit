@@ -1,7 +1,7 @@
 # 멀티서비스 배포 (한 프로젝트 → 앱 여러 개)
 
 > deploy 스킬이 `.fursys-deploy-hub/services.json`(서비스 목록 메타데이터)을 발견했을 때만 읽는다.
-> 이 파일은 배포 전 검토(security-review)가 멀티서비스를 감지하면 만든다. 없으면 **기존 단일배포 그대로**(이 문서 무시).
+> 이 파일은 배포 전 검토(deploy-check)가 멀티서비스를 감지하면 만든다. 없으면 **기존 단일배포 그대로**(이 문서 무시).
 > 사용자에게는 "이 앱은 화면과 기능 두 부분으로 올라가요"처럼 쉬운 우리말로만 설명한다. 서비스/서브도메인/env/web/api 같은 용어는 노출 금지.
 > **선택지 금지:** "둘 다/화면만/기능만" 같은 선택을 제시하지 않는다 — 항상 **전체를 의존순서대로(기능 먼저 → 화면) 함께** 올린다(권장안을 그냥 진행).
 
@@ -107,7 +107,7 @@ rm -f "$WEB_ENV_TMP" 2>/dev/null || true
 
 ## 10. 서비스 base 이미지 — ODBC/MSSQL 의존 서비스는 slim-bookworm (항목29, 항목10 연계)
 멀티서비스에서 **어느 한 서비스(보통 backend/api)가 `pyodbc`·ODBC·MSSQL 드라이버(`unixodbc`·`msodbcsql*`)에 의존**하면, 그 서비스 Dockerfile 의 Python base 는 **`python:3.x-slim-bookworm`(Debian 12)** 이어야 한다. **`python:3.x-slim`(태그 미고정)·`-slim-trixie`(Debian 13) 금지** — trixie 는 OpenSSL SHA1 서명 거부로 `msodbcsql18` 설치/실행이 깨진다(fgdw=MSSQL 연결 시 흔하다).
-- deploy 는 **기존 서비스 Dockerfile 을 그대로 사용**하므로(base 를 새로 만들지 않음) 여기서는 base 를 바꾸지 않는다 — 다만 배포 전 검토(security-review 배포가능성)·`/deploy-fix` 가 그 서비스 Dockerfile 의 `FROM` 을 생성·수정할 때 이 규칙을 적용한다(deploy-fix SKILL ⑤ `odbc-base` — **단일·멀티서비스 모두 서비스 dir 별로 독립 적용**). 의존 판단 근거: 그 서비스 dir 의 `requirements.txt`/`pyproject.toml` 의 `pyodbc`, Dockerfile 의 `unixodbc-dev`·`msodbcsql`·`ACCEPT_EULA`.
+- deploy 는 **기존 서비스 Dockerfile 을 그대로 사용**하므로(base 를 새로 만들지 않음) 여기서는 base 를 바꾸지 않는다 — 다만 배포 전 검토(deploy-check 배포가능성)·`/deploy-fix` 가 그 서비스 Dockerfile 의 `FROM` 을 생성·수정할 때 이 규칙을 적용한다(deploy-fix SKILL ⑤ `odbc-base` — **단일·멀티서비스 모두 서비스 dir 별로 독립 적용**). 의존 판단 근거: 그 서비스 dir 의 `requirements.txt`/`pyproject.toml` 의 `pyodbc`, Dockerfile 의 `unixodbc-dev`·`msodbcsql`·`ACCEPT_EULA`.
 - ODBC 의존이 **아닌** 서비스의 base 는 건드리지 않는다(과수정 금지).
 
 ## 요약 (cataloglens 명시)

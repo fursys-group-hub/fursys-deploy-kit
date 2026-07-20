@@ -76,7 +76,7 @@ catch (e) { console.log("PLAN_ERROR verdict_read: " + e.message); process.exit(1
 const SEV_KO = { critical: "치명", high: "높음", medium: "중간", low: "낮음" };
 const findings = Array.isArray(eng.findings) ? eng.findings : [];
 const envPlan = Array.isArray(lv.env_plan) ? lv.env_plan : [];
-// (deployfix2) 배포준비 자동수정 목록 — security-review 가 last-verdict 에 적은 것.
+// (deployfix2) 배포준비 자동수정 목록 — deploy-check 가 last-verdict 에 적은 것.
 const deployFixes = Array.isArray(lv.deploy_fixes) ? lv.deploy_fixes : [];
 
 // 사람만 아는 값(자동수정 불가) 이름 집합 — note=="ask" 인 설정값.

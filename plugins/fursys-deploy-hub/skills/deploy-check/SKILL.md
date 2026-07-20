@@ -1,5 +1,5 @@
 ---
-name: security-review
+name: deploy-check
 description: 배포 전 검토 — 보안 + 배포 가능성 두 축을 점검해 verdict(통과/주의/차단)와 배포 가능 여부를 판정하고 **항상 한글 `.md` 리포트**를 만들어 채팅에 그대로 보여준다. **오직 슬래시 커맨드 `/deploy-check` 으로 호출될 때만** 이 스킬을 쓴다. "보안 검사", "배포 전 점검", "배포해도 되는지", "검토해줘", "다시 검토" 같은 자연어 요청만으로는 절대 자동 활성화하지 말 것 — "검토·배포"는 일상적으로 자주 쓰이는 말이라 의미만으로 켜면 안 된다. 그런 요청에는 스킬을 시작하지 말고 `/deploy-check` 입력을 안내하라. 결과는 텍스트 요약이 아니라 `.md` 리포트가 기본이다.
 ---
 
@@ -222,7 +222,7 @@ EXPOSE 8501 도 함께 넣어줘.
 **② 스크립트로 조립한다** — 출력은 대상 경로 하위 `.fursys-deploy-hub/security-report-<YYYYMMDD-HHMM>.md`.
 ```bash
 TS=$(date '+%Y%m%d-%H%M')
-"$CLAUDE_PLUGIN_ROOT/skills/security-review/scripts/render-report-md.sh" \
+"$CLAUDE_PLUGIN_ROOT/skills/deploy-check/scripts/render-report-md.sh" \
   ".fursys-deploy-hub/_render-values.txt" \
   ".fursys-deploy-hub/security-report-${TS}.md"
 ```

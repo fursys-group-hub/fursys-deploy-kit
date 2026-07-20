@@ -1,5 +1,5 @@
 <!--
-  배포 전 검토 리포트 — 마크다운 템플릿 (fursys-deploy-hub / security-review)
+  배포 전 검토 리포트 — 마크다운 템플릿 (fursys-deploy-hub / deploy-check)
 
   사용 규칙 (중요):
   - 이 템플릿의 placeholder(이중 중괄호 토큰)만 값/해석으로 채운다. 고정 문구(섹션 제목·라벨·안내문)는 절대 바꾸지 않는다.

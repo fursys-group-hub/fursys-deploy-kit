@@ -63,7 +63,7 @@ SKILL.md 5-2 단계에서 쓴다. **종합 판정 + `last-verdict.json` 기록�
 ```
 호출(빌더 → 업로드 파이프):
 ```bash
-ROOT="$CLAUDE_PLUGIN_ROOT/skills/security-review"
+ROOT="$CLAUDE_PLUGIN_ROOT/skills/deploy-check"
 "$ROOT/scripts/verdict-build.sh" ".fursys-deploy-hub/_engine.json" \
     "fursys-group-hub/<REPO_NAME>" "<HEAD SHA>" "<SECURITY>" "<DEPLOYABLE:true|false>" "<FINAL>" \
     --report-data ".fursys-deploy-hub/security-report-<TS>.md" \

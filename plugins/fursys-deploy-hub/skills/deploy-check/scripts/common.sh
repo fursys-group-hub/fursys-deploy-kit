@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# 공통 헬퍼 — 전송 대상 URL 가드 (security-review 스킬용).
+# 공통 헬퍼 — 전송 대상 URL 가드 (deploy-check 스킬용).
 # verdict-upload.sh 가 `source` 한다. 무인증(배포 키 제거) — 더 이상 키를 읽지 않는다.
 set -euo pipefail
 
@@ -9,12 +9,12 @@ FDH_SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 if [ -n "${CLAUDE_PLUGIN_ROOT:-}" ]; then
   FDH_PLUGIN_ROOT="$CLAUDE_PLUGIN_ROOT"
 else
-  # scripts/ → security-review/ → skills/ → <plugin-root> (3단계 상위)
+  # scripts/ → deploy-check/ → skills/ → <plugin-root> (3단계 상위)
   FDH_PLUGIN_ROOT="$(cd "$FDH_SCRIPT_DIR/../../.." && pwd)"
 fi
 export FDH_SCRIPT_DIR FDH_PLUGIN_ROOT
 
-# 같은 security-review scripts/ 폴더의 다른 스크립트 절대경로를 돌려준다.
+# 같은 deploy-check scripts/ 폴더의 다른 스크립트 절대경로를 돌려준다.
 fdh_script() { printf '%s/%s' "$FDH_SCRIPT_DIR" "$1"; }
 
 # 전송 대상 URL → 전역 PROXY_URL. *.hub.fursys.com 외 override 는 무시(EXTERNAL_BLOCKED).

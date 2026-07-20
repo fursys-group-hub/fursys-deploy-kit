@@ -14,13 +14,13 @@ kit/
     ├─ commands/                             확정적 슬래시 커맨드 입구
     │   ├─ create-app.md                     /create-app → create-app 스킬
     │   ├─ github-setup.md                   /github-setup → github-setup 스킬
-    │   ├─ deploy-check.md                   /deploy-check → security-review 스킬
+    │   ├─ deploy-check.md                   /deploy-check → deploy-check 스킬
     │   ├─ deploy.md                         /deploy → deploy 스킬
     │   └─ my-apps.md                        /my-apps → deploy 스킬의 my-apps.sh
     └─ skills/
         ├─ create-app/                       새 프로젝트 만들기 (scripts/create-app.sh)
         ├─ github-setup/                     회사 GitHub 연결·가입신청·repo 등록 (scripts/github-detect.sh·repo-register.sh)
-        ├─ security-review/                  배포 전 검토 (엔진 + scripts/verdict-upload.sh)
+        ├─ deploy-check/                  배포 전 검토 (엔진 + scripts/verdict-upload.sh)
         └─ deploy/                           최초 배포·정리 (scripts/deploy.sh·logs.sh·my-apps.sh·delete-app.sh, references/)
 ```
 
