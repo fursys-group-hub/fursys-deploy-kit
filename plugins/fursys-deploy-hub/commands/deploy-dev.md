@@ -16,7 +16,7 @@ description: (시험 운용) 앱을 여유 있는 서버에 자동 배치해 처
   - `placement:"auto-metrics"` → 실제 부하를 비교해 고른 것. `placement_reason` 의 수치를 그대로 인용해 안내한다: "두 서버 부하를 비교해서 여유 있는 **○호기**에 올렸어요 (예: node-1: cpu 12%/mem 40% vs node-2: cpu 78%/mem 65%)."
   - `placement:"auto-fallback"` → 지표를 읽지 못해 규칙대로 보낸 것. 솔직하게 안내한다: "부하 지표를 읽을 수 없어서, 정해진 규칙대로 **2호기(번호 높은 서버)** 에 올렸어요."
   - (참고) 운영 확인용: 배포 없이 브라우저로 `https://deploy-proxy.hub.fursys.com/placement` 를 열면 "지금 auto 라면 어디로, 왜(mode=metrics/fallback)"를 미리 볼 수 있다.
-- deploy.sh 가 `SERVER_UNKNOWN` 을 주면(중앙 시스템이 아직 자동 배치를 지원하지 않는 구버전) "자동 배치가 아직 준비 안 됐어요. `/deploy` 또는 `/deploy2` 로 올려 주세요. (IT본부에 중앙 시스템 업데이트를 문의해 주세요.)" 라고 안내하고 멈춘다.
+- deploy.sh 가 `SERVER_UNKNOWN` 을 주면(중앙 시스템이 아직 자동 배치를 지원하지 않는 구버전) "자동 배치가 아직 준비 안 됐어요. `/deploy` 로 올려 주세요. (IT본부에 중앙 시스템 업데이트를 문의해 주세요.)" 라고 안내하고 멈춘다.
 
 **검토 게이트·설정값 수집을 비롯한 나머지 규칙은 `/deploy`(deploy 스킬)와 100% 동일하다** — GitHub 올라감 확인, Dockerfile 빠른 확인, 로컬 검토 게이트(`last-verdict.json`) 확인, 검토 결과 서버 등록, 생성·폴링, 실패 원인 해설, 마무리 안내까지 그대로 따른다.
 
