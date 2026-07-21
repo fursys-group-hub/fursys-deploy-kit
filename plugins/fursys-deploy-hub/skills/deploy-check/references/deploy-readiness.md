@@ -20,6 +20,7 @@
 8. 설정값이 컨테이너 안인가 로컬 도구 전용인가 (scope 판정 — Dockerfile 앵커)
 9. 런타임 접속 대상 점검 (localhost 하드코딩 · 정적 배포에서 깨지는 내부 API 의존)
 10. 응답 헤더 비-ASCII 리터럴 (런타임 env 주입 후에만 터지는 500 — 배포 전 grep 경고)
+11. 동일 컨테이너 same-origin 이면 CORS 불필요 (경고 — B-2 하이브리드 단일컨테이너)
 
 ---
 
@@ -51,6 +52,12 @@ ls -la Dockerfile Dockerfile.* 2>/dev/null || echo NO_DOCKERFILE
 Dockerfile 이 **있어도** 내용 때문에 배포 빌드가 깨지는 두 유형은 이 검토(빌드 미실행)로는 놓치기 쉽다. Node 계열(Next.js·NestJS 등)이면 반드시 확인한다(상세·grep·정준 골격은 `framework-rules.md` Next.js ②-1/②-2):
 - **빌드 단계 `NODE_ENV=production` →** `devDependencies`(tailwind·typescript 등) 스킵으로 `npm run build` 실패. `ENV NODE_ENV=production` 은 runner 에만.
 - **`NEXT_PUBLIC_*`/`VITE_*` 빌드 인자 미선언 →** `ARG` 없으면 build-arg 가 무시되어 `undefined` 로 번들에 인라인(빌드는 통과, 런타임 깨짐). 코드가 쓰는 공개 변수마다 builder 에 `ARG`+`ENV` 필요.
+- **`RUN npm ci` 인데 `package-lock.json` 이 없음 → 첫 빌드 반드시 실패(높음).** `npm ci` 는 **락파일(`package-lock.json`)이 반드시 있어야** 동작한다(없으면 즉시 에러로 종료) → **첫 빌드가 확정 실패**(letus-edu 실사례). 이 검토는 빌드를 안 돌려 놓치기 쉬운 **확정 실패** 유형이라 **높음**. 결정적 grep 으로 탐지(락파일은 Dockerfile 빌드 컨텍스트 기준 — 단일 서비스는 보통 repo 루트, 멀티서비스는 각 서비스 dir):
+  ```bash
+  grep -qiE 'npm ci([[:space:]]|$)' Dockerfile && ! test -f package-lock.json \
+    && echo "WARN: Dockerfile 이 'npm ci' 를 쓰는데 package-lock.json 이 없어 첫 빌드가 반드시 실패"
+  ```
+  → 자동수정 `type:"npm-ci-no-lock"`: Dockerfile 의 `npm ci` → `npm install` 로 **한 줄 치환**(락파일을 새로 만드는 게 아님 — `framework-rules.md` §1 ②-2 정준 골격이 `npm install` 을 쓰는 이유와 동일: Windows 개발 PC 에서 만든 락은 linux-musl 네이티브 의존을 누락해, 락 완전일치를 요구하는 `npm ci` 가 alpine 에서 오히려 깨진다). 화면 문구: "도커 설정이 잠금 파일 없이 'npm ci' 를 써서 **첫 빌드가 반드시 실패해요.** 'npm install' 로 바꾸면 됩니다." **오탐 가드:** 이미 `npm install` 이거나 `package-lock.json` 이 **존재하면** 정상 → 경고·수정 안 함(락파일이 있으면 `npm ci` 가 재현빌드에 오히려 안전하니 그대로 둔다).
 - **non-root + 볼륨 경로 미준비 →** 앱이 `USER`(non-root)로 돌고 영속 볼륨(`services.json` 의 `volumes`, 예 `/data`)을 쓰는데, Dockerfile 이 `USER` 전에 그 경로를 `mkdir -p` + `chown` 하지 않으면, 볼륨이 **root 소유**로 마운트돼 컨테이너 사용자가 못 써 **배포 후 권한 에러로 크래시**(예: `PermissionError: '/data'`). 볼륨 경로가 있으면 Dockerfile 에 `RUN mkdir -p <경로> && chown <user> <경로>` 가 `USER` **앞**에 있는지 확인 → 없으면 **높음**. (빈 볼륨 첫 마운트 시 이미지의 그 경로 소유권이 복사되므로 이렇게 하면 해결.)
 - **`public/` COPY 대상 없음(ERR-01, Next.js standalone) →** runner 가 `COPY --from=builder /app/public ./public` 을 하는데, 프로젝트 루트에 `public/` 디렉터리가 없고 builder 에 `RUN mkdir -p /app/public` 도 없으면, **빌드(`npm run build`)는 성공한 뒤 runner COPY 단계에서 `"/app/public": not found`(exit 1)** 로 깨진다(빌드 미실행 검토로는 놓치기 쉬운 정적-미탐 유형. OOM 의 137 과 구분 — 이건 메모리가 아니라 **경로** 문제). 점검:
   ```bash
@@ -335,3 +342,34 @@ grep -rnE "(headers\s*[=:]\s*[\{\(]|WWW-Authenticate|Content-Disposition|set_hea
 - **연계:** 예외 은폐 구조(인증 미들웨어가 다운스트림까지 try/except 로 감싸 이 500 을 401 로 위장) 는 `owasp-checklist.md` §1-16(안내성) 참조 — 원인 추적을 사실상 불가능하게 만든다. 이 §10 은 그 **원인(헤더 한글)** 을, §1-16 은 그 **증상 은폐** 를 각각 다룬다.
 
 > **§10 은 verdict 를 막지 않는 "배포 후 오류 예고"**(§9 와 동급 — 기능/런타임 경고). 다만 500 은 앱 전체를 죽일 수 있어 **높음**으로 표시하고 배포 전 수정을 강권한다.
+
+---
+
+## 11. 동일 컨테이너 same-origin 이면 CORS 불필요 (경고 — B-2 하이브리드 단일컨테이너)
+
+백엔드가 프론트(정적 파일)를 **같은 컨테이너에서 same-origin 으로 서빙**하면, 브라우저는 프론트를 API 와 **같은 출처(origin)** 에서 로드하므로 **교차출처(CORS)가 발생하지 않는다** → CORS 미들웨어와 `CORS_ORIGIN`/`ALLOWED_ORIGINS` 류 설정값은 **불필요·혼동요소**다(오히려 origin 을 잘못 넣어 배포 후 앱이 자기 자신을 차단하는 사고를 부른다). 이 경우 리포트에 "불필요" **경고**로 표시한다. **verdict 는 막지 않는다**(§7 불변 — 정리 권고).
+
+**"단일 컨테이너 same-origin" 확신 판정 (아래를 *모두* 충족할 때만 — 하나라도 불확실하면 경고 생략 또는 "확인 권장" 경고만):**
+1. **단일 서비스** — 멀티서비스가 아니다(`.fursys-deploy-hub/services.json` 없음, 루트 Dockerfile 1개). 판정 신호는 `multiservice-detect.md` §6.
+2. **백엔드가 프론트를 same-origin 서빙** — 같은 앱이 정적 프론트를 서빙(`express.static(...)` / FastAPI `app.mount("/", StaticFiles(...))` / NestJS `ServeStaticModule` / Flask `static_folder`·`send_from_directory`)하면서 API 라우트도 **같은 앱**에 있다. 즉 브라우저가 프론트를 API 와 같은 origin 에서 받는다.
+3. **외부 클라이언트/별도 프론트 배포 신호 없음** — origin 화이트리스트가 **의미있게** 설정돼 있지 않다(빈 값·`*`·`localhost`(개발용)만). 특정 외부 도메인을 화이트리스트하거나(예 `origin: 'https://partner.example.com'`), 별도 프론트가 다른 곳에 배포되는 정황이 있으면 = **외부에서 이 API 를 부르는 클라이언트가 있다** → CORS 가 필요하다(제거 금지).
+
+```bash
+# CORS 로직·헤더 존재(있어야 논의 대상)
+grep -rniE 'cors\(|enableCors|CORSMiddleware|Access-Control-Allow-Origin' . \
+  --include='*.js' --include='*.jsx' --include='*.ts' --include='*.tsx' --include='*.mjs' --include='*.cjs' --include='*.py' \
+  2>/dev/null | grep -viE '/(node_modules|\.venv|dist|build)/' | head
+# 같은 앱이 프론트 정적 서빙을 하나(same-origin 신호)
+grep -rniE 'express\.static|StaticFiles|ServeStaticModule|send_from_directory|static_folder' . \
+  --include='*.js' --include='*.ts' --include='*.py' 2>/dev/null \
+  | grep -viE '/(node_modules|\.venv|dist|build)/' | head
+```
+
+**판정 흐름:**
+- 1·2·3 **모두 충족** → "CORS 불필요" 경고 + deploy-fix `type:"cors-remove-same-origin"` 자동제거 후보로 `deploy_fixes[]` 에 기록.
+- 2 가 불확실(정적 서빙을 안 함 = 프론트가 별도이거나 SPA 를 다른 데서 빌드/배포)하거나 3 의 화이트리스트가 **의미있으면** → **경고 생략 또는 "확인 권장" 경고만**(자동제거 항목을 만들지 않는다). 코드 삭제라 리스크가 크니 **애매하면 삭제하지 말고 사람 판단**.
+
+- 화면 문구(경고): "이 앱은 화면과 데이터를 **한 서버(같은 주소)** 에서 함께 내보내고 있어요. 이런 경우 교차출처 허용(CORS) 설정은 필요 없고, 오히려 주소를 잘못 넣으면 배포 후 앱이 스스로를 막을 수 있어요 — 관련 설정을 빼는 걸 권해요."
+- **오탐 가드(핵심):** 별도 프론트 배포·외부 클라이언트 가능성이 있거나 origin 화이트리스트가 의미있게 설정돼 있으면 **자동제거 금지 → 경고만**. CORS 제거는 되돌리기 어려운 코드 삭제라 **확신 없으면 건드리지 않는다**(미제거로 인한 무해한 잔존 < 잘못 제거로 인한 외부 클라이언트 차단). 프레임워크별 CORS 보안 점검은 `framework-rules.md` §3(NestJS)·§6(FastAPI)·§11(Express), 자동제거 처리는 deploy-fix SKILL ⑤-4 `cors-remove-same-origin`.
+
+> **§11 은 verdict 를 막지 않는다(§7 불변).** 단일 컨테이너 CORS 불필요는 "정리 권고(경고)"이며, deploy-fix 가 위 확신 조건에서만 자동제거한다.

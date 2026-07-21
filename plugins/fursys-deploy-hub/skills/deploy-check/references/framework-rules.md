@@ -146,7 +146,7 @@ CMD ["node", "server.js"]
 - AWS Bedrock 자격증명을 IAM Role로 대체 가능한지(정적 키 회피).
 - 환경변수 직접 접근 대신 `ConfigService` 사용.
 - Swagger(`/api-docs`) 운영 노출 시 인증 보호 여부.
-- Helmet 적용·CORS origin 화이트리스트 검증.
+- Helmet 적용·CORS origin 화이트리스트 검증. **단, 백엔드가 프론트를 같은 컨테이너에서 same-origin 으로 서빙하면 `app.enableCors(...)` 자체가 불필요** → 제거 권고(경고)·자동제거(deploy-fix `type:"cors-remove-same-origin"`). 확신 판정(단일 서비스 + same-origin 서빙 + 외부 클라이언트 없음)·오탐 가드는 `../deploy-check/references/deploy-readiness.md` §11 / `multiservice-detect.md` §6.
 - **세션/JWT 시크릿 폴백 하드코딩 금지: `process.env.SESSION_SECRET || 'dev-secret'`·`?? 'secret'` 처럼 env 가 없을 때 쓰는 비밀 폴백을 코드에 박지 말 것.** 폴백이 있으면 배포 설정값을 깜빡해도 조용히 약한 비밀로 떠서 세션/토큰 위조 위험. 필수값은 폴백 없이 부재 시 부팅 실패(fail-fast)로 처리한다. (엔진이 `Hardcoded Secret Fallback` 높음으로 잡는다 — 중복 finding 금지.)
 
 ### ② 사내 서버 배포 요건
@@ -234,7 +234,7 @@ fi
 
 ### ① 보안 점검
 - `DEBUG`/`RELOAD` 운영 비활성.
-- CORS Middleware origin 화이트리스트(`*` 금지). **`allow_origins=["*"]` + `allow_credentials=True` 조합은 특히 위험(자격증명 포함 교차출처 허용) — 둘 다 보이면 높음.**
+- CORS Middleware origin 화이트리스트(`*` 금지). **`allow_origins=["*"]` + `allow_credentials=True` 조합은 특히 위험(자격증명 포함 교차출처 허용) — 둘 다 보이면 높음.** **단, 백엔드가 프론트를 같은 컨테이너에서 same-origin 으로 서빙하면(`app.mount("/", StaticFiles(...))` 등) `CORSMiddleware` 자체가 불필요** → 제거 권고(경고)·자동제거(deploy-fix `type:"cors-remove-same-origin"`). 확신 판정·오탐 가드는 `../deploy-check/references/deploy-readiness.md` §11 / `multiservice-detect.md` §6.
 - OAuth2/JWT 미들웨어가 모든 보호 라우트에 적용됐는지.
 - Pydantic Settings로 환경변수 검증(필수 변수 누락 감지). 시크릿 `Field(default=...)` 에 실제 비밀값을 박지 말 것(폴백 하드코딩 — 엔진 점검과 동일).
 - `/docs`·`/redoc` 운영 노출 시 보호 여부.
@@ -285,6 +285,7 @@ fi
 - `EXPOSE` 포트가 앱 실제 포트·사내 서버 설정과 일치하는지.
 - `HEALTHCHECK` 정의 권장. **(item R9-5 — 모든 서버 프레임워크 공통) HEALTHCHECK 는 `localhost` 대신 `127.0.0.1`(IPv4 명시)로 쓴다.** 앱이 `0.0.0.0`(IPv4 전용)으로 바인딩하는데(Node `app.listen(PORT,'0.0.0.0')`·Python uvicorn/gunicorn `--host 0.0.0.0`·Go 등) HEALTHCHECK 가 `wget/curl http://localhost/` 면, alpine 의 `localhost` 가 `::1`(IPv6) 을 먼저 시도해 **연결 거부 → unhealthy → Coolify 롤백 → 신규 앱 404**(빌드·서빙은 정상, 자가진단만 실패 — fursys-import 실사례). **`0.0.0.0` 바인딩 + HEALTHCHECK `localhost` 조합이면 높음** → `127.0.0.1` 로 한 줄 교정(자동수정 `type:"healthcheck-ipv4"`). 앱이 이미 IPv6 도 듣거나 HEALTHCHECK 가 이미 `127.0.0.1`/`[::1]` 이면 정상(오탐 가드). nginx 정적 케이스는 §4 ②-1(custom conf `listen [::]:80` 동반)로, 그 외 서버 앱은 여기 공통 규칙으로 본다. 탐지 grep 은 `../deploy-check/references/deploy-readiness.md` §5-1(B).
 - **(Node/npm 계열 공통 — Next.js·NestJS 등) 빌드 단계에서 `NODE_ENV=production` 으로 의존성을 설치하지 않았는지.** 빌드 도구가 `devDependencies` 에 있으면 스킵되어 빌드가 실패한다. `ENV NODE_ENV=production` 은 실행(runner) 스테이지에서만 두고, 설치/빌드 스테이지에는 두지 않는다. (상세·탐지 grep·정준 Dockerfile 골격은 Next.js ②-1/②-2 참조.)
+- **(Node/npm 계열 공통) `RUN npm ci` 를 쓰는데 `package-lock.json` 이 없으면 첫 빌드가 반드시 실패한다.** `npm ci` 는 락파일 필수(없으면 즉시 에러 종료) → **높음(확정 실패, letus-edu 실사례)**. 자동수정 `type:"npm-ci-no-lock"` = `npm ci`→`npm install` **한 줄 치환**(락파일을 새로 만드는 게 아님 — §1 ②-2 정준 골격이 `npm install` 을 쓰는 이유와 동일: Windows 개발 PC 락은 linux-musl 네이티브 의존을 누락해 alpine `npm ci` 가 깨진다). **오탐 가드:** 이미 `npm install` 이거나 `package-lock.json` 이 존재하면 그대로 둔다(락파일이 있으면 `npm ci` 가 재현성에 유리). 탐지 grep 은 `../deploy-check/references/deploy-readiness.md` §1(Dockerfile 내용 함정 점검).
 
 ---
 
@@ -295,7 +296,7 @@ fi
 ### ① 보안 점검
 - **정적 서빙 루트: `express.static(".")`/`express.static(__dirname)` 금지 — 서버 루트 전체(소스·`.env`·설정)가 URL 로 노출된다.** 전용 폴더(`express.static("public")`)로 좁힌다. (Flask `static_folder="."`·FastAPI `StaticFiles(directory=".")` 와 같은 함정.)
 - **시크릿 폴백 하드코딩 금지:** `process.env.SESSION_SECRET || "dev-secret"` 같은 폴백 리터럴 금지(세션·JWT 서명 위조 위험). 부재 시 부팅 실패(fail-fast). (엔진이 `Hardcoded Secret Fallback` 으로 잡으니 중복 finding 만들지 말 것.)
-- **CORS:** `cors()` 를 옵션 없이 전역 적용하면 `Access-Control-Allow-Origin: *` — origin 화이트리스트로 좁힌다. 자격증명(`credentials:true`) + `*` 조합은 특히 위험.
+- **CORS:** `cors()` 를 옵션 없이 전역 적용하면 `Access-Control-Allow-Origin: *` — origin 화이트리스트로 좁힌다. 자격증명(`credentials:true`) + `*` 조합은 특히 위험. **단, 백엔드가 프론트를 같은 컨테이너에서 same-origin 으로 서빙하면(`express.static(...)` + API 라우트 동거) `app.use(cors(...))` 자체가 불필요** → 제거 권고(경고)·자동제거(deploy-fix `type:"cors-remove-same-origin"`). 확신 판정·오탐 가드는 `../deploy-check/references/deploy-readiness.md` §11 / `multiservice-detect.md` §6.
 - **`helmet` 등 기본 보안 헤더**, body-parser 크기 제한, 사용자 입력 → SQL(파라미터 바인딩)·`child_process`(쉘 주입)·경로조작 점검.
 - `app.listen(PORT, "0.0.0.0")` 자체는 컨테이너 배포에 필요(아래 ②) — 보안 문제 아님.
 

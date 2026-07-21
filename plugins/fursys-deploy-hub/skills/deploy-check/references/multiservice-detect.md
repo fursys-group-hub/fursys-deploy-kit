@@ -92,3 +92,10 @@ grep -qxF '.fursys-deploy-hub/' .gitignore 2>/dev/null || printf '\n# fursys-dep
 }
 ```
 (cross-URL 은 placeholder 그대로 — 실제 주소 치환은 deploy 단계에서.)
+
+## 6. 단일 컨테이너 same-origin 판정 (CORS 불필요 경고 보조 — deploy-readiness §11)
+멀티서비스 감지(§1)의 **반대 신호**를 여기서 정리한다 — deploy-check `deploy-readiness.md` §11(동일 컨테이너면 CORS 불필요)과 deploy-fix `cors-remove-same-origin` 이 "단일 컨테이너 same-origin" 을 **확신**할 때 참조한다.
+- **단일 서비스 확정:** §1 의 A(서브 Dockerfile ≥2)·B(compose 서비스 ≥2)·C(서브 매니페스트 ≥2 분포) 중 **어느 것도 아니어서** `services.json` 을 만들지 않은 경우 = 단일 서비스.
+- **백엔드가 프론트를 same-origin 서빙:** 그 단일 앱이 정적 프론트를 직접 서빙(`express.static`·FastAPI `StaticFiles` 마운트·NestJS `ServeStaticModule`·Flask `static_folder`/`send_from_directory`)하면서 API 라우트도 같은 앱에 있으면, 브라우저는 프론트와 API 를 **같은 origin** 에서 받는다 → 교차출처가 없어 CORS 불필요.
+- **외부 클라이언트 신호(있으면 CORS 필요 — 자동제거 금지):** origin 화이트리스트에 **구체적 외부 도메인**이 있거나(`origin: ['https://...']`), 프론트가 별도로 배포되는 정황(별도 프론트 repo·배포 설정)이 보이면 same-origin 단정 금지 → deploy-check 는 경고만, deploy-fix 는 제거하지 않는다.
+- 이 판정은 `services.json` 을 **만들지 않는다**(단일 서비스 현행 유지). CORS 경고/자동제거의 **확신 근거**로만 쓴다.
