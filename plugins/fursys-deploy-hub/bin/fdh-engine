@@ -81,7 +81,20 @@ var BINARY_EXTENSIONS = /* @__PURE__ */ new Set([
   ".sqlite3",
   ".jar",
   ".war",
-  ".class"
+  ".class",
+  // Design/binary source formats (campaign-dashboard R11). Brand-guideline logos
+  // (.ai/.eps/.psd/…) are not source code: read as text their base85/hex/deflate
+  // streams trip SEC-15 (high-entropy) and occasionally SEC-01/06/09 by chance.
+  // NOTE: .eps is PostScript = plain ASCII (no NUL byte), so the content NUL gate
+  // below cannot catch it — the extension skip is the only thing that does.
+  ".ai",
+  ".eps",
+  ".psd",
+  ".sketch",
+  ".fig",
+  ".indd",
+  ".dat",
+  ".bin"
 ]);
 var MAX_FILE_SIZE = 1048576;
 function decodeText(buf) {
@@ -117,6 +130,25 @@ function decodeText(buf) {
     }
   }
   return buf.toString("utf8");
+}
+function isBinaryContent(buf) {
+  if (buf.length >= 2 && buf[0] === 255 && buf[1] === 254) return false;
+  if (buf.length >= 2 && buf[0] === 254 && buf[1] === 255) return false;
+  if (buf.length >= 3 && buf[0] === 239 && buf[1] === 187 && buf[2] === 191) return false;
+  const sampleLen = Math.min(buf.length, 4096);
+  let nullEven = 0;
+  let nullOdd = 0;
+  for (let i = 0; i < sampleLen; i++) {
+    if (buf[i] === 0) {
+      if (i % 2 === 0) nullEven++;
+      else nullOdd++;
+    }
+  }
+  const totalNulls = nullEven + nullOdd;
+  if (sampleLen >= 4 && totalNulls / sampleLen > 0.2) {
+    if (nullOdd > nullEven * 4 || nullEven > nullOdd * 4) return false;
+  }
+  return totalNulls > 0;
 }
 function walkDir(dir, rootDir) {
   const results = [];
@@ -163,7 +195,9 @@ function scanFiles(rootDir) {
       if (deployable && !deployable.has(relPath)) continue;
       const stat = fs.statSync(filePath);
       if (stat.size > MAX_FILE_SIZE) continue;
-      const content = decodeText(fs.readFileSync(filePath));
+      const buf = fs.readFileSync(filePath);
+      if (isBinaryContent(buf)) continue;
+      const content = decodeText(buf);
       results.push({
         path: relPath,
         content
@@ -380,7 +414,17 @@ var PLACEHOLDER = [
   // Bracket / template-variable placeholder syntax: <...>, ${...}, {{...}}.
   /<[^>]+>/,
   /\$\{[^}]+\}/,
-  /\{\{[^}]+\}\}/
+  /\{\{[^}]+\}\}/,
+  // Scrub / redaction / masking literals (campaign-dashboard R11, ga4-report).
+  // Key-scrubbing code holds a redacted or masked key-shaped literal (the real
+  // key is read from env). These markers can only appear in a non-secret: a
+  // real random key never contains "redact"/"mask", 3+ consecutive asterisks,
+  // or 6+ of the same character in a row (that is a template/dummy fill, e.g.
+  // AIzaSyAAAAAA… or XXXXXX). All value-based, so genuine keys stay flagged.
+  /\bredact(?:ed|ion)?\b/i,
+  /\bmask(?:ed|ing)?\b/i,
+  /\*{3,}/,
+  /(.)\1{5,}/
 ];
 var PLACEHOLDER_TOKEN = [
   // English fill-ins
@@ -454,11 +498,13 @@ function isFalsePositivePath(file) {
 }
 var COMMENT_PREFIX = /(?:^|\s)(?:\/\/|#|\*|<!--|\/\*)/;
 var PEM_FN = /(?:from|to|parse|load|read|is|match|test|replace|import|export)pem/i;
+var MASK_REGEX_CALL = /\.(?:replace|replaceAll|match|matchAll|test|split|search|exec)\s*\(\s*\/[^/]*$/;
 function isPemMarkerReference(line, marker) {
   const idx = line.indexOf(marker);
   if (idx < 0) return false;
   const before = line.slice(0, idx);
   if (COMMENT_PREFIX.test(before)) return true;
+  if (MASK_REGEX_CALL.test(before)) return true;
   if (PEM_FN.test(line.replace(/[^a-z]/gi, ""))) return true;
   return false;
 }
@@ -517,6 +563,23 @@ function looksLikeNaturalLanguage(value) {
   if (CJK.test(v)) return true;
   if (/\w\s+\w/.test(v)) return true;
   return false;
+}
+var STORAGE_KEY_LITERAL = /^[a-z0-9]+(?:[-_][a-z0-9]+)+$/;
+var UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+function looksLikeStorageKeyLiteral(value) {
+  const v = value.trim();
+  if (v.length > 40) return false;
+  if (!STORAGE_KEY_LITERAL.test(v)) return false;
+  if (UUID_RE.test(v)) return false;
+  return /(?:^|[-_])[a-z]{3,}(?:[-_]|$)/.test(v);
+}
+var GOOGLE_FILE_ID = /^[A-Za-z0-9_-]{25,60}$/;
+var GOOGLE_DOC_DOMAIN = /docs\.google\.com|drive\.google\.com|sheets\.google\.com|\/spreadsheets\/d\/|\/document\/d\/|\/drive\/folders\//i;
+var GOOGLE_DOC_ID_NAME = /(?:SHEET|SPREADSHEET|DOC(?:UMENT)?|FOLDER|FILE)_?ID\b/i;
+function looksLikePublicGoogleFileId(value, line) {
+  const v = value.trim();
+  if (!GOOGLE_FILE_ID.test(v)) return false;
+  return GOOGLE_DOC_DOMAIN.test(line) || GOOGLE_DOC_ID_NAME.test(line);
 }
 var SEC16_MIN_LENGTH = 12;
 function isLongOrHighEntropyValue(value) {
@@ -807,6 +870,7 @@ function scanSecrets(files) {
         if (!isLongOrHighEntropyValue(value)) continue;
         if (looksLikeFilePath(value)) continue;
         if (looksLikeNaturalLanguage(value)) continue;
+        if (looksLikeStorageKeyLiteral(value)) continue;
         reportedValues.add(value);
         pushFinding(findings, {
           severity: "high",
@@ -825,6 +889,7 @@ function scanSecrets(files) {
         if (looksLikePlaceholder(value)) continue;
         if (looksLikePublicUrl(value)) continue;
         if (!looksLikeHighEntropySecret(value)) continue;
+        if (looksLikePublicGoogleFileId(value, line)) continue;
         reportedValues.add(value);
         pushFinding(findings, {
           severity: "high",
@@ -845,13 +910,16 @@ import { execSync as execSync2 } from "child_process";
 import * as fs2 from "fs";
 import * as path4 from "path";
 var TIMEOUT = 3e4;
+var MAX_BUFFER = 64 * 1024 * 1024;
+var COMMIT_CAP = 200;
 var ENV_TEMPLATE_RE = /^\.env\.(example|sample|template|dist|defaults)$/;
-function runGit(args, cwd) {
+function runGit(args, cwd, maxBuffer = 10 * 1024 * 1024) {
   try {
     return execSync2(`git ${args.join(" ")}`, {
       cwd,
       timeout: TIMEOUT,
       encoding: "utf-8",
+      maxBuffer,
       stdio: ["pipe", "pipe", "pipe"]
     }).trim();
   } catch {
@@ -901,36 +969,142 @@ function checkGitHistory(cwd) {
   const stringScans = [
     {
       needle: "AKIA",
+      kind: "aws",
       rule: "AWS Key in Git History",
-      message: "Git \uC774\uB825\uC5D0\uC11C AWS Access Key \uD328\uD134 \uBC1C\uACAC \u2014 \uD0A4 \uB85C\uD14C\uC774\uC158 + \uC774\uB825 \uC815\uB9AC \uD544\uC218"
+      message: "Git \uC774\uB825\uC5D0\uC11C AWS Access Key \uBC1C\uACAC \u2014 \uD0A4 \uB85C\uD14C\uC774\uC158 + \uC774\uB825 \uC815\uB9AC \uD544\uC218"
     },
     {
       needle: "BEGIN PRIVATE KEY",
+      kind: "pem",
       rule: "Private Key in Git History",
-      message: "Git \uC774\uB825\uC5D0\uC11C Private Key \uD328\uD134 \uBC1C\uACAC \u2014 \uD0A4 \uD3D0\uAE30 + \uC774\uB825 \uC815\uB9AC \uD544\uC218"
+      message: "Git \uC774\uB825\uC5D0\uC11C Private Key \uBC1C\uACAC \u2014 \uD0A4 \uD3D0\uAE30 + \uC774\uB825 \uC815\uB9AC \uD544\uC218"
     },
     {
       needle: "sk-ant-api03-",
+      kind: "anthropic",
       rule: "Anthropic Key in Git History",
-      message: "Git \uC774\uB825\uC5D0\uC11C Anthropic API Key \uD328\uD134 \uBC1C\uACAC \u2014 \uD0A4 \uC7AC\uBC1C\uAE09 + \uC774\uB825 \uC815\uB9AC \uD544\uC218"
+      message: "Git \uC774\uB825\uC5D0\uC11C Anthropic API Key \uBC1C\uACAC \u2014 \uD0A4 \uC7AC\uBC1C\uAE09 + \uC774\uB825 \uC815\uB9AC \uD544\uC218"
     }
   ];
   for (const scan2 of stringScans) {
-    const hits = runGit(["log", "--all", "-S", `"${scan2.needle}"`, "--oneline"], cwd);
-    if (hits && hits.length > 0) {
-      const count = hits.split("\n").filter(Boolean).length;
-      const base = {
-        severity: "critical",
-        rule: scan2.rule,
-        file: null,
-        line: null,
-        message: `${scan2.message} (${count}\uAC1C \uCEE4\uBC0B)`,
-        inGitHistory: true
-      };
-      findings.push({ ...base, aiPrompt: buildAiPrompt(base) });
-    }
+    const result = classifyNeedle(cwd, scan2.needle, scan2.kind);
+    if (result.verdict === "clean") continue;
+    const evidence = result.evidence;
+    const where = evidence && result.verdict === "confirmed" ? ` (\uCEE4\uBC0B ${evidence.commit.slice(0, 7)} \xB7 ${evidence.file}:${evidence.line})` : result.verdict === "unverified" ? " (\uCEE4\uBC0B \uC774\uB825 \uD655\uC778 \uC2E4\uD328 \u2014 \uC548\uC804\uCE21 \uC720\uC9C0, \uC2E4\uC81C \uD0A4 \uC5EC\uBD80 \uC218\uB3D9 \uD655\uC778 \uD544\uC694)" : ` (${result.count}\uAC1C \uCEE4\uBC0B)`;
+    const base = {
+      severity: "critical",
+      rule: scan2.rule,
+      file: evidence?.file ?? null,
+      line: evidence?.line ?? null,
+      message: `${scan2.message}${where}`,
+      inGitHistory: true
+    };
+    findings.push({ ...base, aiPrompt: buildAiPrompt(base) });
   }
   return findings;
+}
+var AWS_FULL = /AKIA[0-9A-Z]{16}/;
+var ANTHROPIC_FULL = /sk-ant-api03-[A-Za-z0-9_-]{20,}/;
+var PEM_BEGIN = /-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----/;
+function hasRealPemBody(text) {
+  const m = /-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----([\s\S]*?)(?:-----END|$)/.exec(text);
+  if (!m) return false;
+  const body = m[1].replace(/\\n/g, "").replace(/[\s"'`\\,;)+]/g, "");
+  return /[A-Za-z0-9+/=]{40,}/.test(body);
+}
+function classifyNeedle(cwd, needle, kind) {
+  const oneline = runGit(
+    ["log", "--all", "-S", `"${needle}"`, "--oneline", `--max-count=${COMMIT_CAP}`],
+    cwd
+  );
+  if (oneline === null) return { verdict: "unverified", evidence: null, count: 0 };
+  const commits = oneline.split("\n").filter(Boolean);
+  if (commits.length === 0) return { verdict: "clean", evidence: null, count: 0 };
+  const count = commits.length;
+  const patch = runGit(
+    ["log", "--all", "-S", `"${needle}"`, "-p", "--no-color", `--max-count=${COMMIT_CAP}`],
+    cwd,
+    MAX_BUFFER
+  );
+  if (patch === null) return { verdict: "unverified", evidence: null, count };
+  const blocks = parsePatch(patch, needle);
+  for (const b of blocks) {
+    if (b.binary) continue;
+    if (BINARY_EXTENSIONS.has(path4.extname(b.file).toLowerCase())) continue;
+    if (ENV_TEMPLATE_RE.test(path4.basename(b.file))) continue;
+    for (const hit of b.hits) {
+      if (kind === "aws") {
+        if (!AWS_FULL.test(hit.text)) continue;
+      } else if (kind === "anthropic") {
+        if (!ANTHROPIC_FULL.test(hit.text)) continue;
+      } else {
+        if (isPemMarkerReference(hit.text, needle)) continue;
+        if (!PEM_BEGIN.test(b.text)) continue;
+        if (!hasRealPemBody(b.text)) continue;
+      }
+      return {
+        verdict: "confirmed",
+        evidence: { commit: b.commit, file: b.file, line: hit.line || 0 },
+        count
+      };
+    }
+  }
+  return { verdict: "clean", evidence: null, count };
+}
+function parsePatch(patch, needle) {
+  const blocks = [];
+  let commit = "";
+  let block = null;
+  let newLineNo = 0;
+  const flush = () => {
+    if (block && (block.hits.length > 0 || block.binary)) blocks.push(block);
+    block = null;
+  };
+  for (const raw of patch.split("\n")) {
+    if (raw.startsWith("commit ")) {
+      flush();
+      commit = raw.slice(7).trim().split(" ")[0];
+      continue;
+    }
+    if (raw.startsWith("diff --git ")) {
+      flush();
+      block = { commit, file: "", binary: false, hits: [], text: "" };
+      newLineNo = 0;
+      continue;
+    }
+    if (!block) continue;
+    if (raw.startsWith("Binary files ")) {
+      block.binary = true;
+      continue;
+    }
+    if (raw.startsWith("+++ ")) {
+      const p = raw.slice(4).trim();
+      if (p !== "/dev/null") block.file = p.replace(/^b\//, "");
+      continue;
+    }
+    if (raw.startsWith("--- ")) {
+      if (!block.file) {
+        const p = raw.slice(4).trim();
+        if (p !== "/dev/null") block.file = p.replace(/^a\//, "");
+      }
+      continue;
+    }
+    const hunk = /^@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@/.exec(raw);
+    if (hunk) {
+      newLineNo = parseInt(hunk[1], 10);
+      continue;
+    }
+    if (raw.startsWith("+") || raw.startsWith("-")) {
+      const text = raw.slice(1);
+      block.text += text + "\n";
+      if (text.includes(needle)) {
+        block.hits.push({ line: raw.startsWith("+") ? newLineNo : 0, text });
+      }
+    }
+    if (raw.startsWith("+") || raw.startsWith(" ")) newLineNo++;
+  }
+  flush();
+  return blocks;
 }
 
 // src/datafiles.ts
