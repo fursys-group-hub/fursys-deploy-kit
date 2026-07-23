@@ -10,7 +10,7 @@
       "name": "fursys-deploy-hub",
       "source": "./plugins/fursys-deploy-hub",
       "description": "프로젝트 생성 → 회사 GitHub 연결 → 배포 전 검토(보안+배포가능성) → 자동 수정 → 최초 배포를 슬래시 커맨드(/create-app·/github-setup·/deploy-check·/deploy-fix·/deploy)로. 단일팀·무인증 — 자격증명 없이 사내 서버 배포(이후 git push 자동 재배포).",
-      "version": "4.6.1"
+      "version": "4.6.2"
     }
   ]
 }

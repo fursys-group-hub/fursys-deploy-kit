@@ -25,26 +25,38 @@
 
 ### 2.3 fgdw 자격증명 — 역할 태깅 (핵심)
 - **언제 fgdw 로 판정하나(감지 기준, 현행 유지):** 같은 서비스의 어떤 env 의 **값 또는 이름**에 fgdw IP(`192.9.201.23`) 또는 db명(`fgdw`)이 보이면, 그 서비스의 env set 을 fgdw 접속으로 본다.
-- **그 set 안에서 키별 처리:**
+- **접속그룹(connection-group) 스코핑 — 어떤 키가 fgdw 자격증명인지 좁히는 기준 (핵심):**
+  - fgdw set 안에서 **접속정보(IP·db명)를 담은 앵커 키**를 찾는다(값이 fgdw IP 인 `DB_HOST`, 값이 `fgdw` 인 `DB_NAME` 등).
+  - 그 앵커 키 이름의 **접두**(역할/컴포넌트 접미사 앞 토큰)를 도출한다: `DB_HOST`→`DB_`, `FGDW_DB_HOST`→`FGDW_DB_`.
+  - **자격증명 태깅은 이 접속그룹 접두를 공유하는 키에만 적용한다.** 즉 `DB_HOST`/`DB_NAME` 이 앵커면 `DB_USER`·`DB_PASSWORD`(같은 `DB_` 접두)만 fgdw 자격증명으로 태그한다.
+  - **접두가 명백히 다른 키는 역할 접미가 맞아도 태그하지 않는다(앱 도메인 값 보존).** 예: `HQ_ADMIN_ACCOUNT_ID`(접두 `HQ_ADMIN_ACCOUNT_`) — `*ACCOUNT`·`*ID` 패턴에 걸리지만 fgdw 접속그룹(`DB_`)이 아니므로 **fgdw 계정으로 덮지 않는다**. `SESSION_SECRET`(`SESSION_`)·`SUPABASE_PASSWORD`(`SUPABASE_`)도 같은 이유로 제외.
+  - **안전판(방어 우선):** 앵커의 공통 접두를 도출할 수 없는 엣지(앵커가 접두 없는 bare 키이거나, 자격증명 후보가 접두 없는 `USER`/`PASSWORD` 인 경우)에서는 유출 방어를 위해 **이름 패턴만으로 태그**한다(broad). 접두를 못 가릴 땐 미탐(평문 유출)보다 방어를 우선한다. 접두가 **명백히 다를 때만** 제외한다.
+- **그 set 안에서 키별 처리(접속그룹 접두를 공유하는 키에 한해):**
   - **아이디 성격 키**(이름이 `*USER`/`*ID`/`*UID`/`*ACCOUNT` 류, 또는 맥락상 계정) → `value:""`, `class:"locked"`, **`fgdw_role:"user"`** 를 단다.
   - **비밀번호 성격 키**(이름이 `*PASSWORD`/`*PW`/`*PWD`/`*SECRET` 류) → `value:""`, `class:"locked"`, **`fgdw_role:"password"`** 를 단다.
   - **host/db/port 등 비자격증명** → 태그하지 않고 **사용자가 쓴 이름·값 그대로** 보낸다.
-- **키 이름은 표준으로 바꾸지 않는다(이번 규칙의 핵심).** 사용자의 `FGDW_DB_ID`·`DB_PW` 같은 비표준 이름을 그대로 둔 채 태그만 단다. proxy 가 태그를 보고 키 이름·값과 무관하게 `FGDW_SYS_USER`/`FGDW_SYS_PASSWORD` 로 덮는다.
+- **키 이름은 표준으로 바꾸지 않는다(이번 규칙의 핵심).** 사용자의 `FGDW_DB_ID`·`DB_PW` 같은 비표준 이름을 그대로 둔 채 태그만 단다(이들도 앵커 `FGDW_DB_HOST`·`DB_HOST` 와 같은 접속그룹 접두를 공유하므로 태그 대상). proxy 가 태그를 보고 키 이름·값과 무관하게 `FGDW_SYS_USER`/`FGDW_SYS_PASSWORD` 로 덮는다.
+- **⚠️ 회귀 케이스(desker-exhibit):** `HQ_ADMIN_ACCOUNT_ID`(앱 관리자 계정 ID)가 `*ACCOUNT`·`*ID` 패턴에 걸려 fgdw 시스템 계정(`a_hosting_groups`)으로 덮여, `VITE_HQ_ADMIN_ACCOUNT_ID` 까지 오염(빌드 번들 노출)되던 오탐. 접속그룹 스코핑으로 `DB_` 접두가 아닌 이 키들은 **태그하지 않아 원값이 보존**된다. 이 오탐은 desker 국한이 아니라 **fgdw 를 쓰면서 자체 관리자/외부 SaaS 계정 키를 가진 모든 앱의 구조적 오탐**이었다.
 - **값은 빈 문자열 `""`** 로 보낸다(평문 비밀 미전송). proxy 가 어차피 시스템계정으로 덮으므로 원값은 무의미하다.
 - **비표준 이름이면 태그하는 게 1차 방어다.** 태그를 달면 proxy 가 키 이름·값과 무관하게 결정적으로 치환한다 — **이것이 정상 경로다(반드시 태그할 것).**
-- **하위호환·서버 안전판(태그 강제 아님):** 표준 이름(`FGDW_DB_USER`/`FGDW_DB_PASSWORD`)·연결문자열(`Server=…;User Id=…;Password=…;` 또는 `scheme://user:pass@host`)은 태그 없이도 proxy 폴백이 치환한다. 또한 **비표준 분리키**(예 `SQLSERVER_USER`/`DB_PW`)라도, 같은 set 에 fgdw host(`192.9.201.23`)+db(`fgdw`)가 함께 보이면 proxy 가 **키 이름 패턴**(user 류 `*USER`/`*ID`/`*UID`/`*ACCOUNT`, password 류 `*PASSWORD`/`*PW`/`*PWD`/`*SECRET`)으로 자격증명을 식별해 시스템계정으로 덮는다(개인계정 평문 유출 차단 — fc-cost-table 사고 방지). **다만 이 서버 폴백에만 기대지 말 것** — 이름이 패턴에서 벗어나면(예 `MY_ACCT`) 서버가 못 잡으므로, 비표준 이름은 **태깅이 우선이고 서버 폴백은 보조 안전판**이다.
+- **하위호환·서버 안전판(태그 강제 아님):** 표준 이름(`FGDW_DB_USER`/`FGDW_DB_PASSWORD`)·연결문자열(`Server=…;User Id=…;Password=…;` 또는 `scheme://user:pass@host`)은 태그 없이도 proxy 폴백이 치환한다. 또한 **비표준 분리키**(예 `SQLSERVER_USER`/`DB_PW`)라도, 같은 set 에 fgdw host(`192.9.201.23`)+db(`fgdw`)가 함께 보이면 proxy 가 **키 이름 패턴**(user 류 `*USER`/`*ID`/`*UID`/`*ACCOUNT`, password 류 `*PASSWORD`/`*PW`/`*PWD`/`*SECRET`)으로 자격증명을 식별해 시스템계정으로 덮는다(개인계정 평문 유출 차단 — fc-cost-table 사고 방지). **이 서버 폴백도 접속그룹 스코핑을 적용한다** — 앵커(host/db) 이름 접두를 공유하는 키만 치환하고, 접두가 명백히 다른 앱 도메인 키(`HQ_ADMIN_ACCOUNT_ID`→`HQ_`, `SESSION_SECRET`→`SESSION_`, `SUPABASE_PASSWORD`→`SUPABASE_`)는 역할 접미가 맞아도 건드리지 않는다(과치환=엉뚱한 계정 주입으로 앱 크래시 방지). 앵커 접두를 못 가리면 방어(broad) 로 폴백한다. **다만 이 서버 폴백에만 기대지 말 것** — 이름이 패턴에서 벗어나면(예 `MY_ACCT`) 서버가 못 잡으므로, 비표준 이름은 **태깅이 우선이고 서버 폴백은 보조 안전판**이다.
 - **단일·멀티서비스 공통:** 서비스 dir 별 env set 마다 위 규칙을 독립적으로 적용한다.
 
-#### env item 최종 예시 (비표준 이름 + 태그)
+#### env item 최종 예시 (비표준 이름 + 태그, 접속그룹 스코핑)
 ```json
 [
-  { "key": "FGDW_DB_HOST",     "value": "192.9.201.23,1672", "class": "runtime" },
-  { "key": "FGDW_DB_DATABASE", "value": "fgdw",              "class": "runtime" },
-  { "key": "FGDW_DB_ID",       "value": "", "class": "locked", "fgdw_role": "user" },
-  { "key": "FGDW_DB_PW",       "value": "", "class": "locked", "fgdw_role": "password" }
+  { "key": "DB_HOST",             "value": "192.9.201.23", "class": "runtime" },
+  { "key": "DB_NAME",             "value": "fgdw",         "class": "runtime" },
+  { "key": "DB_PORT",             "value": "1672",         "class": "runtime" },
+  { "key": "DB_USER",             "value": "", "class": "locked", "fgdw_role": "user" },
+  { "key": "DB_PASSWORD",         "value": "", "class": "locked", "fgdw_role": "password" },
+  { "key": "HQ_ADMIN_ACCOUNT_ID", "value": "app-admin", "class": "runtime" },
+  { "key": "VITE_HQ_ADMIN_ACCOUNT_ID", "value": "app-admin", "class": "build" }
 ]
 ```
-→ proxy 가 `FGDW_DB_ID` 를 `FGDW_SYS_USER` 로, `FGDW_DB_PW` 를 `FGDW_SYS_PASSWORD` 로 치환. host/db 는 그대로.
+→ 앵커 `DB_HOST`(IP)·`DB_NAME`(fgdw) 접두 = `DB_`. proxy 가 **같은 `DB_` 접두**인 `DB_USER`→`FGDW_SYS_USER`, `DB_PASSWORD`→`FGDW_SYS_PASSWORD` 로 치환. host/db/port 는 그대로. **`HQ_ADMIN_ACCOUNT_ID`·`VITE_HQ_ADMIN_ACCOUNT_ID`(접두 `HQ_ADMIN_ACCOUNT_`)는 `*ACCOUNT`/`*ID` 패턴에 걸려도 접속그룹(`DB_`)이 아니므로 태그하지 않아 원값 보존**(빌드 번들 오염 없음).
+
+> 표준 이름(`FGDW_DB_*`) 예도 동일 원리다: 앵커 `FGDW_DB_HOST`/`FGDW_DB_DATABASE`(접두 `FGDW_DB_`)면 `FGDW_DB_ID`/`FGDW_DB_PW`(같은 `FGDW_DB_` 접두)만 태그된다.
 4. **앱 내부 난수 보안 키 → 자동 생성**(사람이 정할 값이 아님). 키 **이름**이 아래에 매칭되면:
    `SECRET_KEY` · `*_SECRET_KEY` · `JWT_SECRET*` · `SESSION_SECRET` · `NEXTAUTH_SECRET` · `*_SALT` · `ENCRYPTION_KEY` · `APP_KEY` · `CSRF_SECRET`
    → `scripts/gen-secret.sh` 로 강한 난수를 만들어 `class=locked` 로 전송. 사용자에겐 **"보안 키는 자동으로 안전하게 만들어 넣었어요"** 만 알린다(값 미출력). **묻지 않는다.**
