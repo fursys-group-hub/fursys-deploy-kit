@@ -7,7 +7,7 @@
 
 ## 1. 무엇이 필요한가 (키 목록 만들기)
 - 그 앱(서비스) 디렉토리의 `.env`/`.env.example` 키 + 코드가 참조하는 env 를 합친다.
-  - 코드 참조 키는 배포 전 검토(`/deploy-check`)의 엔진 결과(`envVars`)를 재활용한다. 없으면 그 서비스 dir 에서 `fdh-engine <dir> --json --no-prompt 2>/dev/null` 를 1회 돌려 `envVars` 를 얻는다(**stderr 는 버린다 — stdout 만 JSON, 로그가 섞이면 파싱 실패**).
+  - 코드 참조 키는 배포 전 검토(`/deploy-check`)의 엔진 결과(`envVars`)를 재활용한다. 없으면 그 서비스 dir 에서 `node "$CLAUDE_PLUGIN_ROOT/skills/deploy-check/scripts/fdh-engine.mjs" <dir> --json --no-prompt 2>/dev/null` 를 1회 돌려 `envVars` 를 얻는다(**stderr 는 버린다 — stdout 만 JSON, 로그가 섞이면 파싱 실패**).
 - **멀티서비스면 서비스 dir 단위**로 키 목록을 만든다(각 서비스가 쓰는 것만).
 - **`scope:"local"` 항목은 키 목록에서 제외한다.** `last-verdict.json` 의 `env_plan[].scope` 가 `"local"` 인 값은 배포 컨테이너에 안 들어가는 로컬 도구(ETL·갱신 스크립트) 전용이라 **묻지도·`env_vars` 에 넣지도 않는다**(`scope` 미지정/`"container"` 만 처리). 판정 근거는 deploy-check `deploy-readiness.md §8`(Dockerfile COPY 앵커).
 

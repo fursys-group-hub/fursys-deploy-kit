@@ -54,6 +54,7 @@
 #                                        — CREATED 와 동일하게 호출측이 status.sh 로 종결 폴링
 #     (종결 판정 RUNNING/LIVE_OK/LIVE_PENDING/FAILED/BUILDING/UNKNOWN 은 이제 status.sh 가 낸다 — 이 스크립트는 안 낸다.)
 #     PLACEHOLDER_UNRESOLVED         본문에 치환 안 된 ${...} 가 남아 전송 중단(빌드 깨짐 사전 차단)
+#     GATE_NOT_REGISTERED            409 error=not_registered (Playground 앱 등록 신청이 없음)
 #     GATE_NO_VERDICT                409 error=no_verdict (서버 게이트 차단)
 #     GATE_BLOCKED                   409 error=verdict_blocked (서버 게이트 차단)
 #     BAD_REQUEST                    400 (repo/subdomain 누락 등)
@@ -212,6 +213,7 @@ case "$HTTP" in
   409)
     ERR="$(extract error)"
     case "$ERR" in
+      not_registered) echo "GATE_NOT_REGISTERED" ;;
       no_verdict) echo "GATE_NO_VERDICT" ;;
       verdict_blocked) echo "GATE_BLOCKED" ;;
       *) echo "PROXY_ERROR 409" ;;

@@ -22,17 +22,22 @@ description: 배포 전 검토 — 보안 + 배포 가능성 두 축을 점검�
 ## 2) 엔진 실행 (0토큰, 네트워크/LLM 없음) — 시크릿/git/framework/env의 단일 소스
 ```bash
 mkdir -p .fursys-deploy-hub
-fdh-engine "<대상경로>" --json --no-prompt > .fursys-deploy-hub/_engine.json 2>/dev/null
+node "$CLAUDE_PLUGIN_ROOT/skills/deploy-check/scripts/fdh-engine.mjs" "<대상경로>" --json --no-prompt > .fursys-deploy-hub/_engine.json 2>/dev/null
 # 저장 직후 유효 JSON 인지 즉시 검증한다 — 오염되면 멈춘다(빈 파일/혼재 방지).
 node -e 'JSON.parse(require("fs").readFileSync(".fursys-deploy-hub/_engine.json","utf8"))' \
   && echo ENGINE_JSON_OK || echo ENGINE_JSON_INVALID
 ```
-- `fdh-engine` 은 이 플러그인 `bin/` 에 번들된 단일 실행 파일로, 플러그인 활성화 시 PATH에 자동 등록된다(별도 설치 불필요).
+- 엔진은 이 플러그인에 번들된 단일 파일(`skills/deploy-check/scripts/fdh-engine.mjs`)이다(별도 설치 불필요). **`node` 로 절대경로를 직접 부른다 — `fdh-engine` 이라는 PATH 명령은 없다**(있다고 가정해 bare 로 부르면 `command not found`).
+- **`$CLAUDE_PLUGIN_ROOT` 가 비어 못 찾으면**, cwd(프로젝트 폴더)에서 찾지 말고 플러그인 설치 경로에서 찾아 부른다:
+  ```bash
+  ENG="$(find "$HOME/.claude/plugins" -path '*/fursys-deploy-hub/skills/deploy-check/scripts/fdh-engine.mjs' 2>/dev/null | head -1)"
+  node "$ENG" "<대상경로>" --json --no-prompt > .fursys-deploy-hub/_engine.json 2>/dev/null
+  ```
 - **stdout 은 엔진 verdict JSON 만, 로그·진단([engine] …)은 stderr 다.** 저장 명령은 stdout 만 파일로 받고 **stderr 는 `2>/dev/null` 로 버린다** — `_engine.json` 에 로그가 섞여 invalid JSON 이 되면 verdict-build·plan-summary 가 `ENGINE_PARSE_FAIL` 로 깨지기 때문이다(sofa·sidiz·mbom 에서 관측). 저장 직후 `JSON.parse` 1회로 무결성을 즉시 확인한다.
-- `ENGINE_JSON_INVALID` 가 나오면 **그 사실을 알리고 멈춘다**(오염된 파일로 등록·자동수정을 진행하지 않는다). PATH 미해결 등으로 엔진 대신 다른 출력이 섞였을 수 있다.
+- `ENGINE_JSON_INVALID` 가 나오면 **그 사실을 알리고 멈춘다**(오염된 파일로 등록·자동수정을 진행하지 않는다). 엔진 경로 미해결 등으로 엔진 대신 다른 출력이 섞였을 수 있다.
 - 결과 JSON 을 `.fursys-deploy-hub/_engine.json` 에 저장한다(`contracts/security-verdict.schema.json` 형식). 이 파일을 읽어 해석하고, **나중에 `/deploy`(⑤-1) 등록 때 빌더가 이 파일을 그대로 다시 써서 본문을 만든다(손 조립 방지).**
 - exit code: 0=pass, 1=caution, 2=blocked. (`2>/dev/null` 은 exit code 에 영향 없다.)
-  - **(item59) exit 1/2 는 "엔진 오류"가 아니라 정상 판정(caution/blocked)이다 — `&&` 체인으로 후속을 게이팅하지 말 것.** `fdh-engine ... && node -e '...'` 처럼 쓰면 caution(1)·blocked(2)일 때 뒤 단계(JSON 검증·저장 후처리)가 **건너뛰어져** 재검토가 깨진 것처럼 보인다(sidiz 재검토에서 관측). 위 예시처럼 **출력은 `>` 리다이렉트로 받고**(exit code 와 무관하게 파일은 써진다), 무결성 검증은 **별도 줄**에서 `JSON.parse` 로 한다. 엔진 실제 실패는 exit 3+ 또는 stdout 이 비었는지(파일 크기 0)로 판별한다 — exit 1/2 로 판별하지 않는다.
+  - **(item59) exit 1/2 는 "엔진 오류"가 아니라 정상 판정(caution/blocked)이다 — `&&` 체인으로 후속을 게이팅하지 말 것.** `node ".../fdh-engine.mjs" ... && node -e '...'` 처럼 쓰면 caution(1)·blocked(2)일 때 뒤 단계(JSON 검증·저장 후처리)가 **건너뛰어져** 재검토가 깨진 것처럼 보인다(sidiz 재검토에서 관측). 위 예시처럼 **출력은 `>` 리다이렉트로 받고**(exit code 와 무관하게 파일은 써진다), 무결성 검증은 **별도 줄**에서 `JSON.parse` 로 한다. 엔진 실제 실패는 exit 3+ 또는 stdout 이 비었는지(파일 크기 0)로 판별한다 — exit 1/2 로 판별하지 않는다.
 - **엔진이 안 돌면 그 사실을 알리고 멈춘다(임의 판단 금지).**
 
 ### verdict JSON 구조 (이 필드만 쓴다)
