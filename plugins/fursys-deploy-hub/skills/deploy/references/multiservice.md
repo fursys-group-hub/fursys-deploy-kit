@@ -48,7 +48,7 @@ test -f .fursys-deploy-hub/services.json && cat .fursys-deploy-hub/services.json
 치환 후 env_vars 배열을 만든다(단일배포 ④의 분류 규칙과 동일선):
 - `build_env` 의 각 항목 → `{ "key":K, "value":V, "class":"build" }`
 - `runtime_env` 의 각 항목 → `{ "key":K, "value":V, "class":"runtime" }`
-- (그 외 `.env`/코드에서 추가로 모은 값은 **`references/env-resolve.md` 규칙을 서비스별로** 적용한다: 앱 내부 난수 보안 키는 `gen-secret.sh` 로 자동생성, 사람·외부 값만 질문, fgdw 는 비워두고 계정/비번 item 에 역할 태그(`fgdw_role`)를 달아 보냄(proxy 치환 — `env-resolve.md` §2.3, 서비스 dir 별 env set 마다 독립 적용), class 자동 분류(NEXT_PUBLIC_*/VITE_*→build·비밀류→locked·나머지→runtime). **`.env` 없는 서비스**도 그 dir 의 코드에서 필요한 env 를 감지해 같은 규칙으로 채운다.)
+- (그 외 `.env`/코드에서 추가로 모은 값은 **`references/env-resolve.md` 규칙을 서비스별로** 적용한다: 앱 내부 난수 보안 키는 plan 의 `note:"secret-gen"` 으로 표시해 `env-prepare.sh` 가 자동생성, 사람·외부 값만 질문, fgdw 는 비워두고 계정/비번 item 에 역할 태그(`fgdw_role`)를 달아 보냄(proxy 치환 — `env-resolve.md` §2.3, 서비스 dir 별 env set 마다 독립 적용), class 자동 분류(NEXT_PUBLIC_*/VITE_*→build·비밀류→locked·나머지→runtime). **`.env` 없는 서비스**도 그 dir 의 코드에서 필요한 env 를 감지해 같은 규칙으로 채운다.)
 
 ### 5-1. 치환 완료 확인 (빼먹으면 빌드가 조용히 깨진다 — 반드시)
 치환을 끝낸 뒤, 만든 env_vars 배열(과 본문)에 `${...}` 가 **하나도 남아 있지 않은지** 직접 확인한다. 하나라도 남아 있으면(치환을 빠뜨렸거나 매핑을 못 찾은 것) **그 서비스 배포를 진행하지 말고 멈춘다.** 리터럴 `${api.url}` 같은 값이 그대로 들어가면 앱을 만드는 과정에서 주소가 빈 채로 굳어 버려 화면·기능이 깨진다.
@@ -75,26 +75,30 @@ test -f .fursys-deploy-hub/services.json && cat .fursys-deploy-hub/services.json
 - `--volumes <JSON 배열>` — service.volumes 가 있으면 영속 볼륨 경로 배열(예: `["/data"]`). proxy 가 Coolify persistent storage 로 보장 → 상태저장(SQLite·업로드) 데이터가 재배포 후에도 유지. 없으면 생략. ⚠️ non-root 앱은 그 앱 Dockerfile 이 `USER` 전에 해당 경로를 mkdir+chown 해야 컨테이너가 쓸 수 있다(앱 레포 책임 — 배포 전 검토의 배포가능성 점검에서 경고).
 - subdomain(4번째 위치 인자) = 3번에서 계산한 그 서비스의 서브도메인
 - port(5번째) = service.port
-- env_vars = 5번에서 만든 그 서비스의 배열. **서비스마다 임시파일(`--env-file`)로 전달**한다(단일배포 ⑥과 동일 — 시크릿이 argv 에 안 남고 Windows stdin 파이프 불안정 우회. deploy.sh 가 읽은 즉시 삭제).
+- env_vars = **서비스별 plan 파일**(값 없음)을 `env-prepare.sh` 에 넘겨 만든다(단일배포 ⑥-1~⑥-3 과 동일 규칙). ⚠️ **모델이 값(비밀)을 명령문에 쓰지 않는다** — 5번의 cross-URL 치환 결과처럼 **비밀이 아닌 계산값만** plan 의 `value` 에 적고, `.env` 값·난수·채팅으로 받은 값은 스크립트가 채운다. 서비스마다 `--name <서비스>`·`--dir <service.dir>` 를 주면 그 서비스 dir 의 `.env` 를 읽어 `.fursys-deploy-hub/.tmp/env-<서비스>.json` 을 만든다(deploy.sh 가 읽은 즉시 삭제).
 
 ```bash
 # 예: api 먼저 (dockerfile 기본이면 --dockerfile-loc 생략. service.volumes 있으면 --volumes)
-API_ENV_TMP="$(mktemp -t fdhenv.XXXXXX 2>/dev/null || echo "${TMPDIR:-/tmp}/fdhenv.$$.api")"
-( umask 077; printf '%s' "$API_ENV_JSON" > "$API_ENV_TMP" )
+#  ① plan 은 Write 툴로: .fursys-deploy-hub/env-plan-api.json (값 없음 — key/class/note/scope/fgdw_role
+#     + cross-URL 치환이 끝난 비밀 아닌 value)
+"$CLAUDE_PLUGIN_ROOT/skills/deploy/scripts/env-prepare.sh" \
+  --plan .fursys-deploy-hub/env-plan-api.json --dir backend --name api
+# → ENV_READY .fursys-deploy-hub/.tmp/env-api.json <개수>   (ENV_MISSING 이면 그 키를 물어본 뒤 재실행)
 "$CLAUDE_PLUGIN_ROOT/skills/deploy/scripts/deploy.sh" \
   "fursys-group-hub/cataloglens" "$COMMIT" "iloom-hub" "catalog-api" 8100 "" \
-  --env-file "$API_ENV_TMP" --service api --base-dir backend --volumes '["/data"]'
-rm -f "$API_ENV_TMP" 2>/dev/null || true
+  --env-file .fursys-deploy-hub/.tmp/env-api.json --service api --base-dir backend --volumes '["/data"]'
 # → app_id=cataloglens-api, base_directory=/backend, dockerfile_location=/Dockerfile, 볼륨 /data 보장
 
 # 그다음 web
-WEB_ENV_TMP="$(mktemp -t fdhenv.XXXXXX 2>/dev/null || echo "${TMPDIR:-/tmp}/fdhenv.$$.web")"
-( umask 077; printf '%s' "$WEB_ENV_JSON" > "$WEB_ENV_TMP" )
+"$CLAUDE_PLUGIN_ROOT/skills/deploy/scripts/env-prepare.sh" \
+  --plan .fursys-deploy-hub/env-plan-web.json --dir frontend --name web
 "$CLAUDE_PLUGIN_ROOT/skills/deploy/scripts/deploy.sh" \
   "fursys-group-hub/cataloglens" "$COMMIT" "iloom-hub" "catalog" 3000 "" \
-  --env-file "$WEB_ENV_TMP" --service web --base-dir frontend
-rm -f "$WEB_ENV_TMP" 2>/dev/null || true
+  --env-file .fursys-deploy-hub/.tmp/env-web.json --service web --base-dir frontend
 # → app_id=cataloglens-web
+
+# 모든 부분을 올린 뒤 임시 파일 정리
+"$CLAUDE_PLUGIN_ROOT/skills/deploy/scripts/env-prepare.sh" --clean
 ```
 - 각 호출의 결과 코드는 단일배포 ⑦과 똑같이 처리한다. **`CREATED`/`REDEPLOYED` 면 그 서비스마다 ⑦-1 종결 폴링 루프(`status.sh <app_id>` backoff 반복)를 돌려 `RUNNING`(성공)/`FAILED`(→⑨)까지 따라간 뒤 다음 서비스로 넘어간다**(deploy.sh 는 POST 까지만 — 종결 대기는 스킬이 한다). `REDEPLOY_WEBHOOK` 은 폴링하지 않는다. 409 등은 ⑦ 그대로.
 - **`PLACEHOLDER_UNRESOLVED`** 가 나오면 = 치환을 빠뜨려 `${...}` 가 본문에 남은 것(스크립트가 전송 전에 막았다 — 앱은 만들어지지 않았다). 5-1의 안내("주소 연결값이 아직 안 채워졌어요…")로 사용자에게 알리고 **거기서 멈춘다.** 배포 전 검토를 다시 돌려 연결 목록을 새로 만든 뒤 재시도하도록 안내한다.

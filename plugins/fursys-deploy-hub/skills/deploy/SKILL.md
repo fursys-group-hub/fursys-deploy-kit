@@ -30,8 +30,9 @@ description: 사내 서버에 자기 앱을 처음으로 생성·올린다. **�
 - **배포 후 검증 강제(중복 생성 사고 방지 — 반드시):** `deploy.sh` 호출 뒤 **그 출력(결과 코드)을 반드시 읽고**, `CREATED`/`REDEPLOYED` 면 ⑦-1 의 `status.sh` 종결 폴링으로 기동/실패를 **확인한 뒤에만** 다음 행동을 정한다. **이미 `CREATED`/`REDEPLOYED`(또는 폴링에서 `RUNNING`/`BUILDING`/`UNKNOWN`) 를 받은 서비스는 "이미 만들어진 것"** — **절대 다른 방식·다른 app_id 로 다시 만들지 않고, deploy.sh 를 재호출(재-POST)하지 않는다**(예: 멀티서비스 web 을 루트 Dockerfile 로 또 올리는 것 금지). 빌드가 의심되면 **재배포가 아니라 `logs.sh` 로 원인 확인**(⑨)이 먼저다.
 - **빌드 로그 ≠ 커밋 메시지:** `logs.sh` 의 빌드 출력에 들어 있는 **git 커밋 메시지(예: "NODE_ENV 함정 수정")를 빌드 실패/성공 근거로 해석하지 않는다.** 빌드 성패는 오직 `status`(`finished`/`failed`)와 실제 빌드 단계 출력으로 판단한다.
 - **전송 대상 고정(보안 핵심):** 전송 대상은 기본 `https://deploy-proxy.hub.fursys.com`. `FURSYS_PROXY_URL` 로 덮어쓰더라도 **호스트가 `*.hub.fursys.com`(사내)일 때만 허용**한다. 그 외 주소면 무시하고 기본값을 쓴다 — 번들 스크립트의 공통 헬퍼(`common.sh`)가 이 가드를 적용하며, 외부 주소를 만나면 `EXTERNAL_BLOCKED` 를 알린다. 그때 사용자에게 "외부 주소로의 전송은 차단했습니다(안전)"라고 전한다. → 개인 키·설정값이 외부로 새지 않게.
-- **읽는 범위 최소화(보안 핵심):** 설정값은 **현재 프로젝트 폴더의 `.env` 하나만** 읽는다. 홈 디렉터리·상위 폴더·기타 위치의 자격증명을 광범위하게 뒤지지 않는다(그렇게 하면 보안상 위험 행동으로 보인다).
-- **스크립트는 플러그인에 번들돼 있다 — 프로젝트 파일이 아니다.** `deploy.sh`·`status.sh`·`logs.sh`·`registration.sh`·`common.sh` 는 `$CLAUDE_PLUGIN_ROOT/skills/deploy/scripts/` 아래에 플러그인과 **항상 함께 설치**된다. **현재 프로젝트 폴더엔 없는 게 정상이고, `github-setup` 등 다른 스킬이 만들어 주는 것이 아니다.** 따라서 "이 프로젝트에 deploy.sh 가 없다 / github-setup 으로 생성돼야 한다"고 **절대 단정하지 말 것**(환각 — 실제로는 플러그인 경로에 있다).
+- **읽는 범위 최소화(보안 핵심):** 설정값은 **현재 프로젝트 폴더의 `.env` 하나만** 읽는다. 홈 디렉터리·상위 폴더·기타 위치의 자격증명을 광범위하게 뒤지지 않는다(그렇게 하면 보안상 위험 행동으로 보인다). **실제 읽기는 번들 스크립트 `env-prepare.sh` 가 하고, 목록(plan)에 이름이 있는 키만 읽는다**(프로젝트 밖 경로는 스크립트가 거부한다).
+- **설정값(비밀)은 모델이 명령문에 담지 않는다(⑥).** `.env` 값 읽기·정규화·난수 생성·임시파일 만들기는 `env-prepare.sh` 가 한다. 모델이 만든 Bash 명령문에 비밀번호·키가 들어가면 도구 권한 정책이 이를 자격증명 노출로 판정해 자동 실행을 막고 **배포가 마지막 단계에서 멈춘다**(2026-07-31 현업 사고).
+- **스크립트는 플러그인에 번들돼 있다 — 프로젝트 파일이 아니다.** `deploy.sh`·`env-prepare.sh`(+`env-prepare.mjs`)·`status.sh`·`logs.sh`·`registration.sh`·`common.sh` 는 `$CLAUDE_PLUGIN_ROOT/skills/deploy/scripts/` 아래에 플러그인과 **항상 함께 설치**된다. **현재 프로젝트 폴더엔 없는 게 정상이고, `github-setup` 등 다른 스킬이 만들어 주는 것이 아니다.** 따라서 "이 프로젝트에 deploy.sh 가 없다 / github-setup 으로 생성돼야 한다"고 **절대 단정하지 말 것**(환각 — 실제로는 플러그인 경로에 있다).
 - 호출은 `"$CLAUDE_PLUGIN_ROOT/skills/deploy/scripts/deploy.sh"`. **`$CLAUDE_PLUGIN_ROOT` 가 비어 못 찾으면, 프로젝트에서 찾지 말고 플러그인 설치 경로에서 찾아** 절대경로로 호출한다:
   ```bash
   DH="$(find "$HOME/.claude/plugins" -path '*/fursys-deploy-hub/skills/deploy/scripts/deploy.sh' 2>/dev/null | head -1)"
@@ -108,18 +109,18 @@ test -f .fursys-deploy-hub/services.json && echo HAS_MANIFEST || echo NO_MANIFES
 
 ## ④ 설정값 자동 수집 (사용자에게 거의 묻지 않음)
 앱이 정상 동작하려면 그 앱이 쓰는 설정값을 같이 넣어야 한다. **대부분 자동으로 처리하고, 사용자에게는 거의 묻지 않는다.**
-1. **수집(내부 작업, 용어 노출 금지):** **먼저 `.fursys-deploy-hub/last-verdict.json` 의 `env_plan` 을 읽는다 — 있으면 그 목록(name·class·note·scope)을 1차 목록으로 그대로 쓰고 코드를 다시 뒤지지 않는다(배포 전 검토가 이미 전수 분석했으므로 — 속도).** `env_plan` 의 `note` 가 곧 처리 방법이다: `fgdw`→아래 3(공용계정 자동치환), `secret-gen`→아래 4의 난수 자동생성, `ask`→아래 4의 한 개씩 질문(빠졌으면 **배포 전 강제 질문** — 임의로 건너뛰지 않음), `public-url`/`''`→일반값. `env_plan` 이 없을 때만(검토를 안 돌렸거나 옛 형식) 현재 폴더 `.env` 와 코드 참조를 새로 스캔한다. (값 자체는 어느 경우든 로컬 `.env` 에서 채운다.)
+1. **수집(내부 작업, 용어 노출 금지):** **먼저 `.fursys-deploy-hub/last-verdict.json` 의 `env_plan` 을 읽는다 — 있으면 그 목록(name·class·note·scope)을 1차 목록으로 그대로 쓰고 코드를 다시 뒤지지 않는다(배포 전 검토가 이미 전수 분석했으므로 — 속도).** `env_plan` 의 `note` 가 곧 처리 방법이다: `fgdw`→아래 3(공용계정 자동치환), `secret-gen`→아래 4의 난수 자동생성, `ask`→아래 4의 한 개씩 질문(빠졌으면 **배포 전 강제 질문** — 임의로 건너뛰지 않음), `public-url`/`''`→일반값. `env_plan` 이 없을 때만(검토를 안 돌렸거나 옛 형식) 현재 폴더 `.env` 와 코드 참조를 새로 스캔한다. (**값 자체는 ⑥의 `env-prepare.sh` 가 로컬 `.env` 에서 직접 읽어 채운다 — 모델은 값을 읽어 명령문·목록에 담지 않는다.** 여기서 정하는 건 "어떤 키를 어떻게 처리할지"뿐이다.)
    - ⚠️ **`scope:"local"` 항목은 배포에서 제외한다(묻지도·주입하지도 않음).** `scope:"local"` = 배포 컨테이너에 안 들어가는 코드(로컬 ETL·자료 갱신 스크립트)만 쓰는 값이라 배포에 불필요하다. **이 항목은 질문 대상에서 빼고 `env_json` 에도 넣지 않는다.** `note:"ask"` 가 붙어 있어도 `scope:"local"` 이면 강제 질문하지 않는다(아래 4). 사용자에겐 질문이 아니라 **한 줄 안내만** 한다: "이 값들은 자료 갱신할 때 본인 PC `.env`에서만 쓰는 거예요 — 서버 배포엔 안 들어가요." (`scope` 가 없거나 `"container"` 인 항목만 아래 2~7 처리 대상이다 — 기본값 container, 하위호환.)
 2. **안전 기본값 자동 적용(묻지 않는다):**
    - 운영 모드: `NODE_ENV=production`
    - 포트: Dockerfile 의 `EXPOSE` 값, 없으면 `3000`
    - `NEXT_PUBLIC_*` / `VITE_*` → 빌드 포함 값(`build`)으로, 그 외는 일반 실행값(`runtime`)으로 **자동 분류**(사용자에게 "build냐 runtime이냐"를 묻지 않는다). 비밀번호·키류는 `locked`.
-   - 로컬 `.env` 에 이미 있는 값 → **앞뒤 따옴표만 정규화한 값**으로 사용(아래 따옴표 제거 규칙). 따옴표가 없으면 그대로.
+   - 로컬 `.env` 에 이미 있는 값 → **앞뒤 따옴표만 정규화한 값**으로 사용(아래 따옴표 제거 규칙). 따옴표가 없으면 그대로. **이 정규화는 ⑥의 `env-prepare.sh` 가 결정적으로 수행한다 — 모델이 값을 읽어 손으로 다루지 않는다**(규칙은 아래에 참고용으로 남긴다).
      - **따옴표 제거 규칙(결정적 — dotenv 와 동일, 즉석 판단 금지):** `.env` 한 줄 `KEY=VALUE` 의 `VALUE` 를 `env_json` 에 실을 때 ① 값의 **첫 글자와 끝 글자가 둘 다 `"`** 이거나 **둘 다 `'`** 이고 길이≥2이면 그 **바깥 한 쌍만** 제거한다(내부 인용부호는 보존). ② 큰따옴표(`"…"`)로 감쌌을 때만 dotenv 처럼 **이스케이프 해제**(`\n`→개행, `\"`→`"`, `\\`→`\`). 작은따옴표(`'…'`)는 **literal**(이스케이프 해제 안 함). ③ 따옴표로 감싸지 않은 값은 **그대로**. ④ **한쪽만 따옴표**(`"abc` 또는 `abc"`)는 짝이 안 맞으므로 **제거하지 않는다**(literal 보존). 예: `"a&b"`→`a&b`, `'x'`→`x`, `""`→빈값, `"postgresql://...&..."`→따옴표 없는 raw 연결문자열. **시크릿 값은 화면·로그에 출력하지 않는다**(정규화는 값을 다루되 출력하지 않는다).
 3. **fgdw(사내 DB) 사용 시:** 접속 계정/비밀번호는 **넣지 않아도 된다.** 프록시가 배포 시 사내 공용 계정으로 자동 채운다. (호스트·DB이름 같은 주소값은 **사용자가 쓴 이름 그대로** 두고, 계정·비밀번호에 해당하는 값만 비워 보낸다. 변수 이름을 정해진 표준으로 바꿀 필요는 없다.) 비밀번호를 화면에 노출하지 않는다.
    - (내부 지침) 비워 보내는 계정/비번 item 에 역할 태그 `fgdw_role:"user"`/`"password"` 를 달아야 프록시가 키 이름·값과 무관하게 공용계정으로 치환한다. 표준이름·연결문자열 케이스는 태그 없이도 프록시 폴백이 처리. 상세·판정기준은 `references/env-resolve.md` §2.3.
 4. **빠진 비밀·키 — 자동생성과 질문을 구분한다(`references/env-resolve.md` 규칙, 모든 앱 공통):**
-   - **앱 내부 보안 키**(이름이 `JWT_SECRET*`·`SESSION_SECRET`·`SECRET_KEY`·`*_SALT`·`NEXTAUTH_SECRET`·`ENCRYPTION_KEY` 등 — 사람이 정할 값이 아닌 난수) → `scripts/gen-secret.sh` 로 **자동 생성**해 넣는다(`class=locked`). 사용자에겐 "보안 키는 자동으로 안전하게 만들어 넣었어요"만 알리고 **묻지 않는다**(값 미출력).
+   - **앱 내부 보안 키**(이름이 `JWT_SECRET*`·`SESSION_SECRET`·`SECRET_KEY`·`*_SALT`·`NEXTAUTH_SECRET`·`ENCRYPTION_KEY` 등 — 사람이 정할 값이 아닌 난수) → **plan 에 `note:"secret-gen"`·`class:"locked"` 로 적기만 한다.** ⑥의 `env-prepare.sh` 가 강한 난수를 만들어 넣는다(`gen-secret.sh` 와 같은 규약 — hex 64자). **모델은 그 값을 보지도, 명령문에 담지도 않는다.** 사용자에겐 "보안 키는 자동으로 안전하게 만들어 넣었어요"만 알리고 **묻지 않는다**(값 미출력).
    - **사람이 정하는 값**(`ADMIN_PASSWORD` 등 관리자 비번)·**외부 서비스 자격증명**(`*_API_KEY`/`*_TOKEN`/사외 `*_PASSWORD`, Supabase·외부 DB 접속값 등 — `env_plan` 에서 `note:"ask"` **이고 `scope` 가 `container`(또는 미지정)** 인 값) → **배포(⑥) 전에 반드시 한 개씩 묻는다(강제 게이트):** (⚠️ `note:"ask"` 라도 `scope:"local"` 이면 로컬 도구 전용이므로 **묻지 않는다** — 위 1 참조.)
      > "이 앱이 '○○'(쉬운 설명) 값을 필요로 하는데 아직 없어요. 값이 있으면 붙여넣어 주세요."
      - ⚠️ **`note:"ask"` 인데 로컬 `.env` 에 값이 없는 항목이 하나라도 남아 있으면 ⑥(배포)으로 넘어가지 않는다.** 사용자가 ① 값을 주거나, ② "그건 비워두고 진행할게요"라고 **명시적으로 답할 때까지 배포하지 않는다**(빈 값인 채로 그냥 올리지 않는다).
@@ -128,7 +129,7 @@ test -f .fursys-deploy-hub/services.json && echo HAS_MANIFEST || echo NO_MANIFES
    - fgdw 계정/비번은 위 3처럼 비워 보낸다(proxy 자동치환). 일반값(운영모드·포트·공개 URL)은 자동.
    - **분류·이름 패턴 상세는 `references/env-resolve.md`.** (난수 자동생성 ↔ 질문 ↔ fgdw치환 ↔ cross-URL ↔ 일반값 판정)
 
-수집한 목록은 `deploy.sh` 의 `env_json` 으로 전달한다(값은 화면에 그대로 출력하지 않는다). 형식: `[{"key":"K","value":"V","class":"runtime|build|locked"}]`. 시크릿 값이 인자에 남지 않게 **표준입력(stdin)으로 전달**하는 것을 권장한다. 종류(`class`)는 위 규칙으로 **자동** 결정한다.
+수집 결과는 **값이 없는 목록(plan)** 으로 ⑥-1 에 적는다(`key`·`class`·`note`·`scope`·`fgdw_role`). 값을 실은 `env_json` 을 모델이 직접 만들지 않는다 — ⑥의 `env-prepare.sh` 가 plan 을 받아 `.env` 에서 값을 채워 `deploy.sh` 에 넘긴다. 종류(`class`)는 위 규칙으로 **자동** 결정한다.
 
 ## ⑤ 배포 전 검토 게이트 — 로컬 빠른 확인 (UX용. 진짜 강제는 서버가 함)
 배포 전 검토(deploy-check)가 남긴 **검토 결과 파일**을 읽어, 통과한 코드만 올린다. 이 파일은 **빠른 실패(UX)용**이다 — 검토를 안 했거나 통과 못 한 걸 미리 잡아 헛수고(중복 생성·실패 재시도)를 막는다. **진짜 강제는 서버(중앙 배포 시스템)가 한다**: 서버는 등록된 검토 기록을 보고, 통과하지 못한 코드면 ⑥에서 `409`(`verdict_blocked`/`no_verdict`)로 거부한다(⑦ 참조). 그러니 이 파일이 없거나 미통과면 여기서 미리 멈춰 사용자를 돕는다. 프로젝트 루트의 `.fursys-deploy-hub/last-verdict.json` 을 읽는다:
@@ -185,28 +186,63 @@ REPORT_MD="$(grep -oE '"report"[[:space:]]*:[[:space:]]*"[^"]+"' .fursys-deploy-
 - **`BAD_BODY <사유>`** → 검토 산출물이 불완전하다. "**'배포 전 검토 해줘'(`/deploy-check`)를 다시 한 번** 실행한 뒤 배포해 주세요." 멈춘다.
 - (멀티서비스여도 등록은 repo 단위 1회면 충분하다.)
 
-## ⑥ 생성·배포 실행 (deploy.sh → POST /apps)
+## ⑥ 생성·배포 실행 (설정값 준비 → deploy.sh → POST /apps)
 번들 스크립트로 생성·배포를 트리거한다. 키·전송 대상 가드는 스크립트가 처리한다. **종결(기동/실패) 판정은 ⑦의 스킬 주도 폴링이 한다**(deploy.sh 는 POST 까지만).
-```bash
-# 포트: 프로젝트 Dockerfile 의 EXPOSE 값(없으면 3000). 비개발자에게 묻지 않고 자동 결정.
-#   next=3000 / vite(nginx)=8080 / fastapi=8000 — 틀리면 배포돼도 502(라우팅 불일치) 난다.
-PORT="$(grep -iE '^EXPOSE' Dockerfile 2>/dev/null | grep -oE '[0-9]+' | head -1)"
-# (단일 서비스 영속 볼륨) 검토가 last-verdict.json 에 volumes_plan 을 남겼으면 그대로 --volumes 로 전달.
-#   값이 있을 때만 플래그를 붙인다 — 없거나 [] 면 현행과 100% 동일(플래그 미전송).
-VOL="$(grep -oE '"volumes_plan"[[:space:]]*:[[:space:]]*\[[^]]*\]' .fursys-deploy-hub/last-verdict.json 2>/dev/null | sed -E 's/.*:[[:space:]]*(\[[^]]*\]).*/\1/')"
-VOL_FLAG=()
-case "$VOL" in ''|'[]') : ;; *) VOL_FLAG=(--volumes "$VOL") ;; esac
-# env_json 은 **임시파일(--env-file)** 로 전달한다 — 시크릿이 인자(argv)·프로세스 목록에 안 남고,
-# Windows(Git Bash) 에서 `printf | deploy.sh` stdin 파이프가 간헐적으로 exit 1·빈출력으로 깨지는
-# 문제도 우회한다(파일은 파이프와 달리 EOF 레이스가 없다). deploy.sh 가 읽은 즉시 그 파일을 삭제한다.
-ENV_TMP="$(mktemp -t fdhenv.XXXXXX 2>/dev/null || echo "${TMPDIR:-/tmp}/fdhenv.$$")"
-( umask 077; printf '%s' "$ENV_JSON" > "$ENV_TMP" )   # 0600 으로 생성(시크릿 보호)
-"$CLAUDE_PLUGIN_ROOT/skills/deploy/scripts/deploy.sh" \
-  "fursys-group-hub/<REPO>" "<COMMIT>" "group-hub" "<주소앞부분>" "${PORT:-3000}" "" \
-  --env-file "$ENV_TMP" "${VOL_FLAG[@]}"
-rm -f "$ENV_TMP" 2>/dev/null || true   # deploy.sh 가 이미 지우지만 폴백으로 한 번 더(빈 ENV_JSON 등)
+
+> ⚠️ **비밀값을 모델이 명령문에 쓰지 않는다(2026-07-31 — 배포가 마지막 단계에서 멈추던 원인).** 예전 방식은 모델이 Bash 명령문 안에 `ENV_JSON='[{"key":"DATABASE_URL","value":"<비밀번호가 든 연결문자열>"}...]'` 를 직접 써서 임시파일로 옮기게 했다. 그러면 **비밀값이 모델이 만든 명령문에 그대로 남아** 도구의 권한 정책이 자격증명 노출로 보고 자동 실행을 막고(사용자에게 매번 허가를 요구하며 멈춤), 임시파일도 프로젝트 밖(`/tmp`)에 만들어 허용 규칙으로 덮을 수 없었다. → 이제 **`.env` 읽기·따옴표 정규화·난수 생성·임시파일 만들기는 전부 번들 스크립트 `env-prepare.sh` 가** 한다. 모델은 **값이 없는 목록(plan)** 만 만든다.
+
+### ⑥-1 설정값 목록(plan) 작성 — **Write 툴로 파일에 쓴다(명령문에 쓰지 않는다)**
+④에서 정한 처리 방침을 `.fursys-deploy-hub/env-plan.json` 에 그대로 적는다. **값은 넣지 않는다.**
+```json
+{ "version": 1, "items": [
+  { "key": "DATABASE_URL", "class": "locked",  "note": "ask" },
+  { "key": "SECRET_KEY",   "class": "locked",  "note": "secret-gen" },
+  { "key": "DB_HOST",      "class": "runtime" },
+  { "key": "DB_USER",      "class": "locked",  "note": "fgdw", "fgdw_role": "user" },
+  { "key": "DB_PASSWORD",  "class": "locked",  "note": "fgdw", "fgdw_role": "password" },
+  { "key": "NODE_ENV",     "class": "runtime", "value": "production" },
+  { "key": "PORT",         "class": "runtime", "value": "8200" },
+  { "key": "ETL_TOKEN",    "class": "locked",  "note": "ask", "scope": "local" }
+] }
 ```
-- `ENV_JSON` 이 비어 있어도 위 방식은 안전하다(빈 파일 → deploy.sh 가 인자/stdin 폴백). `--env-file` 경로가 안 읽히면 deploy.sh 는 `ENV_FILE_UNREADABLE`(stderr)만 찍고 인자/stdin 값으로 폴백한다.
+- 각 필드는 ④·`references/env-resolve.md` 의 판정 결과 그대로다: `class`(build/runtime/locked)·`note`(`ask`/`secret-gen`/`fgdw`/`public-url`/`''`)·`scope`·`fgdw_role`(fgdw 자격증명일 때만).
+- **`value` 는 비밀이 아닌 계산값에만 쓴다** — 운영 모드(`production`)·포트·공개 URL·멀티서비스 cross-URL(치환 완료된 실제 주소). ⚠️ **비밀번호·API 키·연결문자열을 `value` 에 적지 않는다**(그 값은 스크립트가 `.env` 에서 직접 읽는다).
+- `scope:"local"` 항목은 목록에 남겨도 스크립트가 제외한다(묻지도·보내지도 않음 — ④ 규칙 그대로).
+- 멀티서비스면 서비스별로 파일을 나눈다(`env-plan-api.json`·`env-plan-web.json`).
+
+### ⑥-2 사용자가 채팅으로 준 값 전달 (`note:"ask"` 인데 `.env` 에 없을 때만)
+④에서 사용자가 붙여넣어 준 값(외부 API 키·관리자 비번 등)은 **명령문에 쓰지 말고** 전용 파일에 **Write 툴**로 적는다(스크립트가 읽고 즉시 지운다).
+```bash
+"$CLAUDE_PLUGIN_ROOT/skills/deploy/scripts/env-prepare.sh" --init
+```
+- `TMP_READY <dir>` + `ASK_FILE <경로>` → 그 `ASK_FILE`(`.fursys-deploy-hub/.tmp/ask.env`)에 **Write 툴**로 한 줄씩 `KEY=사용자가 준 값` 형태로 적는다(따옴표 없이 원값 그대로, 여러 개면 여러 줄). 받은 값을 채팅에 다시 되풀이하지 않는다.
+- `ENV_NOT_IGNORED` → 그 위치가 코드와 함께 올라갈 수 있는 상태다. **값을 적지 말고 멈춘다**: "설정값을 안전하게 둘 자리를 만들지 못했어요. IT본부에 문의해 주세요."
+- 받을 값이 없으면 이 단계는 건너뛴다.
+
+### ⑥-3 설정값 채우기 (스크립트가 `.env` 를 읽는다)
+```bash
+"$CLAUDE_PLUGIN_ROOT/skills/deploy/scripts/env-prepare.sh" --plan .fursys-deploy-hub/env-plan.json
+```
+- 값이 다른 폴더의 `.env` 에 있으면 `--dir <폴더>`(예 `--dir backend` → `backend/.env`), 여러 곳이면 `--env <경로>` 를 여러 번(앞이 우선). 멀티서비스는 서비스마다 `--name <서비스>` 로 페이로드를 구분한다.
+- 첫 줄 결과 코드로 분기한다:
+  - **`ENV_READY <경로> <개수>`** → 그 `<경로>` 를 ⑥-4 의 `--env-file` 에 그대로 넘긴다. 이어지는 `GENERATED <키>...` 는 자동 생성한 보안 키(사용자에겐 "보안 키는 자동으로 안전하게 만들어 넣었어요"만), `OMITTED`/`LOCAL_SKIPPED` 는 안 보낸 값이다(그대로 진행).
+    - 함께 나오는 **`PORT <숫자>`·`VOLUMES <배열>`** 은 ⑥-4 에 그대로 쓸 배포 인자다(스크립트가 루트 `Dockerfile` 의 `EXPOSE` 와 `last-verdict.json` 의 `volumes_plan` 을 대신 읽어 준 것). `VOLUMES` 줄이 없으면 `--volumes` 를 붙이지 않는다. **멀티서비스는 `PORT` 힌트를 무시하고 `services.json` 의 port 를 쓴다.**
+  - **`ENV_EMPTY <경로>`** → 보낼 설정값이 없다. 그 경로를 그대로 넘긴다(서버는 빈 목록을 미전송과 동일하게 처리한다).
+  - **`ENV_MISSING <키>...`** → **배포하지 않는다(④의 강제 게이트).** 그 키를 한 개씩 쉬운 말로 묻고, 값을 받으면 ⑥-2 로 저장한 뒤 이 단계를 다시 실행한다. 사용자가 "비워두고 진행"을 **명시**하면 그 항목에 `"allow_empty": true` 를 넣어 plan 을 다시 쓰고 재실행한다. **모델이 스스로 건너뛰지 않는다.**
+  - **`NO_PLAN`/`PLAN_INVALID`** → plan 파일을 다시 쓴다(경로·JSON 확인).
+  - **`NODE_REQUIRED`/`TMP_UNWRITABLE`/`WRITE_FAILED`** → 진행 불가. "이 PC 에서 설정값을 준비할 수 없어요. IT본부에 문의해 주세요."
+- **값은 화면에 나오지 않는다**(스크립트는 키 이름만 출력한다). 값을 확인하려고 페이로드 파일을 `cat` 하지 말 것 — 그러면 비밀이 화면·기록에 남는다.
+
+### ⑥-4 배포 실행
+**⑥-3 이 알려준 값(경로·포트·볼륨)을 리터럴로 채워** 스크립트 한 줄로 부른다. `$(...)` 치환이나 변수 대입을 이 명령에 섞지 않는다(명령 형태가 고정돼 있어야 매번 승인을 요구받지 않는다).
+```bash
+"$CLAUDE_PLUGIN_ROOT/skills/deploy/scripts/deploy.sh" \
+  "fursys-group-hub/<REPO>" "<COMMIT>" "group-hub" "<주소앞부분>" "<⑥-3 의 PORT>" "" \
+  --env-file .fursys-deploy-hub/.tmp/env.json --server auto
+```
+- **`--volumes` 는 ⑥-3 이 `VOLUMES <배열>` 을 줬을 때만** 뒤에 붙인다: `--volumes '["/data"]'`(그 줄이 없으면 붙이지 않는다 — 현행과 100% 동일).
+- `--env-file` 경로는 ⑥-3 이 출력한 그 경로다(단일 배포는 항상 `.fursys-deploy-hub/.tmp/env.json`, 멀티서비스는 `--name` 을 준 경우 `.fursys-deploy-hub/.tmp/env-<서비스>.json`). 경로가 안 읽히면 deploy.sh 는 `ENV_FILE_UNREADABLE`(stderr)만 찍고 인자/stdin 으로 폴백한다. **설정값은 파일 경로로만 오간다 — 이 명령문에 값(비밀)이 없다.**
+- **배포가 끝나면(성공·실패·중단 무관) 임시 파일을 정리한다** — `"$CLAUDE_PLUGIN_ROOT/skills/deploy/scripts/env-prepare.sh" --clean`(멀티서비스는 모든 부분을 올린 뒤 한 번).
 - `<COMMIT>` 은 ⑤에서 계산한 `$COMMIT`(`git rev-parse HEAD`) 값을 넣는다. **반드시 포함**한다 — 서버 게이트가 GitHub 브랜치 HEAD를 직접 해석하지 못하는 경우(폴백) 이 값으로 검토 통과 여부를 조회하므로, 빠지면 통과한 코드도 배포가 거부된다.
 - **포트는 반드시 전달**한다(5번째 인자). Dockerfile `EXPOSE` 로 자동 결정하며, 빠지면 서버가 3000으로 잡아 **vite·fastapi 가 502** 로 깨진다.
 - **단일 서비스 영속 볼륨(데이터 보존):** `last-verdict.json` 의 `volumes_plan`(검토가 SQLite·업로드 디렉터리 등을 감지해 적어 둔 컨테이너 경로 목록)이 있으면 위처럼 `--volumes '["/data", ...]'` 로 함께 보낸다. 그러면 서버가 그 경로에 저장 공간을 마련해 **재배포해도 데이터(예: 데이터베이스 파일)가 사라지지 않는다.** 사용자에겐 쉬운 말로만 알린다: "이 앱은 자료(예: 데이터베이스 파일)를 저장하니, 재배포해도 안 사라지게 **저장 공간을 함께 마련**했어요." `volumes_plan` 이 없거나 비어 있으면 이 플래그를 보내지 않는다(현행과 동일). (멀티서비스는 이 필드를 보지 않고 `services.json` 의 `volumes` 를 쓴다 — `references/multiservice.md`.)

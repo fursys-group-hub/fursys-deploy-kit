@@ -3,7 +3,8 @@
 > deploy 가 앱(서비스)마다 보낼 설정값(env_vars)을 채울 때 따른다. **단일·멀티서비스 공통.**
 > 핵심 원칙: **사람이 정할 필요가 없는 값은 묻지 않는다.** 난수 보안 키는 자동 생성하고, 사람만이 아는 값(관리자 비번·외부 자격증명)만 묻는다.
 > 이 규칙은 특정 앱(cataloglens 등)이 아니라 **임의의 앱**에 적용된다 — 이름 패턴으로 판정한다(대소문자 무시).
-> 비밀 **값**은 `services.json` 등 파일에 적지 않는다. deploy 시점에 해결해 **proxy 로만**(stdin) 보낸다.
+> 비밀 **값**은 `services.json` 등 파일에 적지 않는다. deploy 시점에 해결해 **proxy 로만** 보낸다.
+> **★ 값을 만지는 주체(2026-07-31):** 아래 판정(무엇을 자동생성·질문·치환·제외할지)은 **모델**이 하고, 그 결과를 **값이 없는 plan**(`key`·`class`·`note`·`scope`·`fgdw_role`)으로 적는다. **`.env` 읽기·따옴표 정규화·난수 생성·페이로드 파일 생성은 번들 스크립트 `scripts/env-prepare.sh` 가 전담**한다(deploy SKILL ⑥-1~⑥-3). 모델이 비밀값을 명령문에 담으면 도구 권한 정책이 자격증명 노출로 보고 자동 실행을 막아 **배포가 마지막 단계에서 멈춘다**(현업 사고 2026-07-31). 그래서 값은 모델을 거치지 않는다.
 
 ## 1. 무엇이 필요한가 (키 목록 만들기)
 - 그 앱(서비스) 디렉토리의 `.env`/`.env.example` 키 + 코드가 참조하는 env 를 합친다.
@@ -19,7 +20,8 @@
      3. 따옴표로 **감싸지 않은** 값은 **그대로**(불변).
      4. **한쪽만 따옴표**(`"abc` 또는 `abc"`)는 짝이 안 맞으므로 **제거하지 않는다**(literal 보존 — 사용자 의도일 수 있음).
    - **검증 케이스:** `"a&b"`→`a&b` · `'x'`→`x` · `raw`→`raw`(불변) · `""`→빈 문자열 · `"postgresql://u:p@h:5432/db?a=1&b=2"`→따옴표 없는 raw(Prisma 통과) · `"say \"hi\""`→`say "hi"`(큰따옴표 이스케이프 해제) · `'say "hi"'`→`say "hi"`(작은따옴표 내부 보존) · `"abc`→`"abc`(짝 안 맞음, 불변).
-   - **보안 불변식:** 시크릿(키·비밀번호) **값은 화면·로그·파일에 출력하지 않는다.** 정규화 결과 `env_json` 은 stdin 으로만 proxy 에 전달한다. `deploy.sh` 는 변경하지 않는다(조립된 값만 받음). proxy 가 받는 `env_vars[].value` 의미는 불변(따옴표 없는 raw — 지금까지 따옴표째 보내던 버그를 고치는 것).
+   - **적용 주체:** 이 규칙은 `scripts/env-prepare.mjs` 가 결정적으로 구현한다(모델이 값을 읽어 손으로 정규화하지 않는다). 여러 줄 값(따옴표 안 개행)은 뒤에서 닫히고 그 사이에 `KEY=` 가 없을 때만 이어 붙이고, 그렇지 않으면 ④(짝 안 맞음 → 불변)로 처리한다 — 뒷줄의 다른 키를 삼키지 않게.
+   - **보안 불변식:** 시크릿(키·비밀번호) **값은 화면·로그·파일에 출력하지 않는다.** 정규화 결과는 `env-prepare.sh` 가 만든 임시 페이로드 파일(프로젝트 안 `.fursys-deploy-hub/.tmp/`, git 무시 보장, deploy.sh 가 읽은 즉시 삭제)로만 `deploy.sh --env-file` 에 넘긴다. `deploy.sh` 는 변경하지 않는다(조립된 값만 받음). proxy 가 받는 `env_vars[].value` 의미는 불변(따옴표 없는 raw — 지금까지 따옴표째 보내던 버그를 고치는 것).
 2. **다른 서비스의 주소 참조** — 매니페스트 `build_env`/`runtime_env` 의 `${<svc>.url}` placeholder → deploy 가 실제 URL 로 치환한다(`multiservice.md`). 묻지 않음.
 3. **fgdw(사내 DB) 접속정보** — **비워서 + 역할 태그(`fgdw_role`)를 달아 보낸다.** proxy 가 태그를 보고 사내 공용계정으로 결정적 치환한다. 묻지 않음. 상세는 **§2.3**.
 
@@ -59,7 +61,7 @@
 > 표준 이름(`FGDW_DB_*`) 예도 동일 원리다: 앵커 `FGDW_DB_HOST`/`FGDW_DB_DATABASE`(접두 `FGDW_DB_`)면 `FGDW_DB_ID`/`FGDW_DB_PW`(같은 `FGDW_DB_` 접두)만 태그된다.
 4. **앱 내부 난수 보안 키 → 자동 생성**(사람이 정할 값이 아님). 키 **이름**이 아래에 매칭되면:
    `SECRET_KEY` · `*_SECRET_KEY` · `JWT_SECRET*` · `SESSION_SECRET` · `NEXTAUTH_SECRET` · `*_SALT` · `ENCRYPTION_KEY` · `APP_KEY` · `CSRF_SECRET`
-   → `scripts/gen-secret.sh` 로 강한 난수를 만들어 `class=locked` 로 전송. 사용자에겐 **"보안 키는 자동으로 안전하게 만들어 넣었어요"** 만 알린다(값 미출력). **묻지 않는다.**
+   → plan 에 **`note:"secret-gen"`·`class:"locked"`** 로 적는다. `scripts/env-prepare.sh` 가 강한 난수(hex 64자 — `gen-secret.sh` 와 같은 규약)를 만들어 넣는다. **모델은 그 값을 보지 않는다**(모델 명령문·문맥에 난수가 남지 않는다). 사용자에겐 **"보안 키는 자동으로 안전하게 만들어 넣었어요"** 만 알린다(값 미출력). **묻지 않는다.**
 5. **사람이 정하는 값 → 질문.** `ADMIN_PASSWORD` · `*ADMIN_PASSWORD` · 초기 관리자 비번류 → 한 개씩 쉽게:
    > "관리자 비밀번호를 정해서 알려주세요. (나중에 이 값으로 로그인합니다. 모르면 비워두고 IT본부에 문의하세요.)"
 6. **외부 서비스 자격증명 → 질문**(추측·생성 불가). `*_API_KEY` · `*_TOKEN` · `*_ACCESS_KEY` · fgdw 가 아닌 외부 `*_PASSWORD`/`*_SECRET`(URL·호스트가 사외) · **Supabase 등 외부 서비스 접속값**(`SUPABASE_URL`/`SUPABASE_SERVICE_ROLE_KEY`/`SUPABASE_ANON_KEY`/외부 `DATABASE_URL` 류) → `note:"ask"`.
@@ -73,13 +75,14 @@
 - 그 외 → `runtime`
 
 ## 4. 보안 불변식
-- 자동 생성·수집·치환한 비밀 **값을 화면·로그·파일에 출력하지 않는다.** `services.json` 에도 비밀 값을 적지 않는다(키·출처만). 값은 deploy 가 `deploy.sh` 의 stdin(env_json)으로 proxy 에만 전달.
+- 자동 생성·수집·치환한 비밀 **값을 화면·로그·파일에 출력하지 않는다.** `services.json`·plan 파일에도 비밀 값을 적지 않는다(키·처리방침만). 값은 `env-prepare.sh` 가 만든 페이로드 파일 → `deploy.sh --env-file` → proxy 로만 흐른다.
+- **모델이 작성하는 명령문(Bash)에 비밀값이 실려서는 안 된다.** 사용자가 채팅으로 준 값도 명령문이 아니라 `env-prepare.sh --init` 이 알려주는 `ask.env`(Write 툴, git 무시 보장, 읽은 즉시 삭제)로 넘긴다. `bash -x` 로 값이 든 명령을 추적하지 않는다.
 - 자동 생성 비밀은 **그 배포 세션 동안 한 번만 만들어 재사용**한다(같은 배포에서 매번 새로 만들지 않음). proxy 는 최초 생성 전담이라 보통 앱당 1회다. 이후 수정은 `git push` 자동 재배포라 이 값이 유지된다(자동생성 키를 바꾸려면 IT가 재설정).
 
 ## 예시 (cataloglens — 규칙의 한 인스턴스일 뿐, 전용 규칙 아님)
 | 키 | 판정 | 처리 |
 |---|---|---|
-| `JWT_SECRET_KEY` | 4 (내부 난수) | gen-secret.sh 자동 생성, locked |
+| `JWT_SECRET_KEY` | 4 (내부 난수) | plan `note:"secret-gen"` → env-prepare.sh 가 난수 생성, locked |
 | `ADMIN_PASSWORD` | 5 (사람이 정함) | 질문 |
 | `DB_HOST`(fgdw) | 3 (fgdw, 비자격증명) | 이름·값 그대로 |
 | `DB_USER`(fgdw) | 3/§2.3 (아이디) | 비워 보냄 + `fgdw_role:"user"` → proxy 치환 |
