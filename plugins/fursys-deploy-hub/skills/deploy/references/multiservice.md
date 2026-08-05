@@ -73,6 +73,9 @@ test -f .fursys-deploy-hub/services.json && cat .fursys-deploy-hub/services.json
 - `--base-dir <service.dir>` (예: `backend`. 슬래시 없이 줘도 proxy 가 `/backend` 로 정규화)
 - `--dockerfile-loc <service.dockerfile || "Dockerfile">` — **base_directory 기준 상대경로**다. dir 을 앞에 붙이지 말 것(`backend/Dockerfile`처럼 보내면 Coolify가 `/backend/backend/Dockerfile`로 잘못 찾는다). 보통 `Dockerfile` 이라 **생략 가능**(생략 시 proxy 기본값 `/Dockerfile`). proxy 가 선행 슬래시로 정규화한다.
 - `--volumes <JSON 배열>` — service.volumes 가 있으면 영속 볼륨 경로 배열(예: `["/data"]`). proxy 가 Coolify persistent storage 로 보장 → 상태저장(SQLite·업로드) 데이터가 재배포 후에도 유지. 없으면 생략. ⚠️ non-root 앱은 그 앱 Dockerfile 이 `USER` 전에 해당 경로를 mkdir+chown 해야 컨테이너가 쓸 수 있다(앱 레포 책임 — 배포 전 검토의 배포가능성 점검에서 경고).
+- **`--primary`** — 그 서비스의 `primary == true` 일 때만 붙인다(3번에서 주소를 그대로 쓴 그 서비스 = **사용자가 브라우저로 여는 화면**). 사내 로그인 보호(인증)는 **이 서비스에만** 걸린다.
+  - ⚠️ **백엔드(api 등)에는 절대 붙이지 않는다.** 화면과 백엔드는 주소가 달라 브라우저가 로그인 쿠키를 안 보내므로, 백엔드에 인증을 걸면 화면에서 부르는 요청이 막혀 **앱이 빈 화면으로 뜬다.**
+  - `primary` 가 매니페스트에 없어 첫 서비스를 대표로 간주한 경우(3번 규칙)에도 **그 서비스에** 붙인다.
 - subdomain(4번째 위치 인자) = 3번에서 계산한 그 서비스의 서브도메인
 - port(5번째) = service.port
 - env_vars = **서비스별 plan 파일**(값 없음)을 `env-prepare.sh` 에 넘겨 만든다(단일배포 ⑥-1~⑥-3 과 동일 규칙). ⚠️ **모델이 값(비밀)을 명령문에 쓰지 않는다** — 5번의 cross-URL 치환 결과처럼 **비밀이 아닌 계산값만** plan 의 `value` 에 적고, `.env` 값·난수·채팅으로 받은 값은 스크립트가 채운다. 서비스마다 `--name <서비스>`·`--dir <service.dir>` 를 주면 그 서비스 dir 의 `.env` 를 읽어 `.fursys-deploy-hub/.tmp/env-<서비스>.json` 을 만든다(deploy.sh 가 읽은 즉시 삭제).
@@ -94,8 +97,9 @@ test -f .fursys-deploy-hub/services.json && cat .fursys-deploy-hub/services.json
   --plan .fursys-deploy-hub/env-plan-web.json --dir frontend --name web
 "$CLAUDE_PLUGIN_ROOT/skills/deploy/scripts/deploy.sh" \
   "fursys-group-hub/cataloglens" "$COMMIT" "iloom-hub" "catalog" 3000 "" \
-  --env-file .fursys-deploy-hub/.tmp/env-web.json --service web --base-dir frontend
-# → app_id=cataloglens-web
+  --env-file .fursys-deploy-hub/.tmp/env-web.json --service web --base-dir frontend --primary
+# → app_id=cataloglens-web. --primary 가 붙었으므로 이 주소에만 사내 로그인 보호가 걸린다
+#   (api 호출에는 --primary 를 주지 않았다 — 붙이면 화면에서 부르는 요청이 막힌다)
 
 # 모든 부분을 올린 뒤 임시 파일 정리
 "$CLAUDE_PLUGIN_ROOT/skills/deploy/scripts/env-prepare.sh" --clean

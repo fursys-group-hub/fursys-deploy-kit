@@ -36,6 +36,10 @@
 #
 #   멀티서비스 옵션 플래그 (선택 — 안 주면 단일배포와 100% 동일):
 #     --service <name>          : 이 호출이 만드는 서비스 이름. 주면 proxy 가 app_id=`{repo}-{name}`.
+#     --primary                 : 이 서비스가 **사용자가 브라우저로 여는 화면**(services.json 의 primary)임.
+#                                 사내 로그인 보호(인증 미들웨어)는 이 서비스에만 붙는다 — 백엔드(api)에
+#                                 붙이면 화면에서 부르는 API 호출이 401 로 깨진다. 단일배포는 이 플래그가
+#                                 없어도 화면으로 간주된다(--service 미전송 = 앱 자체가 화면).
 #     --base-dir <dir>          : 빌드 디렉토리(POST /apps 의 base_directory). 예: backend.
 #                                 슬래시 없이 줘도 proxy 가 "/backend" 로 정규화한다(Coolify 선행슬래시 요구).
 #     --dockerfile-loc <path>   : base_directory **기준 상대** Dockerfile 경로(dir 을 앞에 붙이지 말 것).
@@ -60,6 +64,8 @@
 #     BAD_REQUEST                    400 (repo/subdomain 누락 등)
 #     SERVER_UNKNOWN                 400 error=unknown_server (--server 이름/uuid 를 못 찾음)
 #     SUBDOMAIN_RESERVED             400 error=reserved_subdomain (서버 지정 시 예약 주소 앞부분 거부)
+#     LABEL_FAILED                   502 error=label_failed (사내 인증 미들웨어를 못 붙여 배포 중단.
+#                                    **앱은 배포되지 않았다** — 재시도해도 중복 앱은 안 생긴다)
 #     PROXY_ERROR <http_code>        502 등 기타 오류
 #   부가정보로 응답 본문(warnings 포함)을 함께 출력하므로, 호출 측이 warnings 를 읽어 안내한다.
 set -uo pipefail
@@ -78,12 +84,14 @@ REPO="${1:-}"; COMMIT="${2:-}"; TEAM="${3:-}"; SUBDOMAIN="${4:-}"; PORT="${5:-}"
 # 위치 인자 6개를 소비한 뒤, 남은 인자에서 멀티서비스 옵션 플래그를 파싱한다.
 [ "$#" -ge 1 ] && shift "$(( $# < 6 ? $# : 6 ))"
 SERVICE=""; BASE_DIR=""; DOCKERFILE_LOC=""; VOLUMES=""; BRANCH=""; ENV_FILE=""; APP_KEY=""; SERVER=""
+PRIMARY=""
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --branch)         BRANCH="${2:-}"; shift 2 ;;
     --app)            APP_KEY="${2:-}"; shift 2 ;;
     --server)         SERVER="${2:-}"; shift 2 ;;
     --service)        SERVICE="${2:-}"; shift 2 ;;
+    --primary)        PRIMARY=1; shift ;;
     --base-dir)       BASE_DIR="${2:-}"; shift 2 ;;
     --dockerfile-loc) DOCKERFILE_LOC="${2:-}"; shift 2 ;;
     --volumes)        VOLUMES="${2:-}"; shift 2 ;;
@@ -149,6 +157,7 @@ BODY="$(printf '{"repo":"%s","commit":"%s","team":"%s","subdomain":"%s","branch"
 [ -n "$APP_KEY" ]        && BODY="$BODY$(printf ',"app":"%s"' "$APP_KEY")"
 [ -n "$SERVER" ]         && BODY="$BODY$(printf ',"server":"%s"' "$SERVER")"
 [ -n "$SERVICE" ]        && BODY="$BODY$(printf ',"service":"%s"' "$SERVICE")"
+[ -n "$PRIMARY" ]        && BODY="$BODY,\"primary\":true"
 [ -n "$BASE_DIR" ]       && BODY="$BODY$(printf ',"base_directory":"%s"' "$BASE_DIR")"
 [ -n "$DOCKERFILE_LOC" ] && BODY="$BODY$(printf ',"dockerfile_location":"%s"' "$DOCKERFILE_LOC")"
 [ -n "$VOLUMES" ]        && BODY="$BODY$(printf ',"volumes":%s' "$VOLUMES")"
@@ -220,6 +229,14 @@ case "$HTTP" in
     esac
     printf '%s\n' "$JSON"
     ;;
-  502) echo "PROXY_ERROR 502"; printf '%s\n' "$JSON" ;;
+  502)
+    ERR="$(extract error)"
+    case "$ERR" in
+      # (authmw) 사내 인증 미들웨어(회사 계정 로그인)를 앱에 붙이지 못해 서버가 배포를 멈춘 것.
+      # 인증 없이 앱이 뜨는 것을 허용하지 않는 정책(strict) — **앱은 배포되지 않았다.**
+      label_failed) echo "LABEL_FAILED" ;;
+      *)            echo "PROXY_ERROR 502" ;;
+    esac
+    printf '%s\n' "$JSON" ;;
   *) echo "PROXY_ERROR $HTTP"; printf '%s\n' "$JSON" ;;
 esac

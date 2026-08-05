@@ -14,6 +14,8 @@
 #     RUNNING <app_id> <https_url|빈값>  컨테이너 기동 확인(terminal-성공). /status 가 *running*.
 #                                        domain 인자가 있으면 https URL, 없으면 주소 미동반(호출측이 CREATED domain 사용).
 #     LIVE_OK <https_url> <code>       (RUNNING 뒤 보조 줄) https 직접 응답 2xx/3xx — 바로 접속 가능.
+#     LIVE_AUTH <https_url> <code>     (RUNNING 뒤 보조 줄) https 응답 401/403 — 떴고 **회사 계정 로그인** 후 열림
+#                                      (사내 인증 미들웨어. CONTRACTS §12). 실패가 아니다.
 #     LIVE_PENDING <https_url> <code>  (RUNNING 뒤 보조 줄) 기동했으나 https 첫 응답 아직(예열).
 #     FAILED <app_id>                  terminal-실패. /logs ∈ {failed,cancelled-by-user} 또는
 #                                      /status ∈ {exited,error,stopped,failed}.
@@ -66,6 +68,9 @@ HTTPS_URL=""
 [ -n "$DOMAIN" ] && HTTPS_URL="https://${DOMAIN#*://}"
 
 # 우선순위 1: /status 가 *running* → RUNNING(+LIVE 보조). 컨테이너가 떴으면 빌드 성공 — 최우선.
+# ⚠️ LIVE 계열 줄은 **기동 판정의 근거가 아니다.** 사내 인증 미들웨어는 컨테이너보다 앞단이라
+#    앱이 죽어 있어도 401 을 낼 수 있다. 그래서 LIVE 확인은 /status 가 running 일 때만 하고,
+#    기동 판정은 언제나 /status 가 한다(CONTRACTS §11.1).
 case "$STATUS" in
   *running*)
     # ⚠️ domain 유무와 무관하게 RUNNING 을 무조건 먼저 echo 한다(domain 없어도 기동 성공 판정 유실 금지).
@@ -75,11 +80,13 @@ case "$STATUS" in
       LIVE_CODE=""
       for _ in 1 2 3; do
         LIVE_CODE="$(curl -sS -o /dev/null -w '%{http_code}' -L --max-time 8 "$HTTPS_URL" 2>/dev/null || true)"
-        case "$LIVE_CODE" in 2*|3*) break ;; esac
+        # 401/403 은 예열 상태가 아니라 **확정 응답**(사내 인증 미들웨어가 막은 것)이라 재시도하지 않는다.
+        case "$LIVE_CODE" in 2*|3*|401|403) break ;; esac
       done
       case "$LIVE_CODE" in
-        2*|3*) echo "LIVE_OK $HTTPS_URL $LIVE_CODE" ;;
-        *)     echo "LIVE_PENDING $HTTPS_URL ${LIVE_CODE:-000}" ;;
+        2*|3*)   echo "LIVE_OK $HTTPS_URL $LIVE_CODE" ;;
+        401|403) echo "LIVE_AUTH $HTTPS_URL $LIVE_CODE" ;;
+        *)       echo "LIVE_PENDING $HTTPS_URL ${LIVE_CODE:-000}" ;;
       esac
     fi
     exit 0 ;;
