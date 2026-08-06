@@ -57,6 +57,16 @@ node -e 'JSON.parse(require("fs").readFileSync(".fursys-deploy-hub/_engine.json"
 엔진의 시크릿/git findings를 **출발점**으로, 그 위에 LLM이 코드를 읽어 보안 실수를 더한다.
 1. `references/owasp-checklist.md` 로 **OWASP 배포 시점 15항목**을 점검한다(DEBUG, CORS `*`, Spring permitAll, HTTPS 미강제, 평문 비밀번호, SQL injection, 의존성, 디버그 엔드포인트, 인증 미보호, 로그 시크릿, 파일 업로드, SSRF, XSS, Streamlit 설정, 정적 서빙 루트가 서버 폴더 전체).
 2. `references/framework-rules.md` 에서 **엔진이 감지한 프레임워크(`target.framework`) 섹션의 ① 보안 점검** 부분만 읽어 점검한다(unknown이면 공통 Dockerfile 점검만).
+2-1. **외부 저장소·호스팅 의존 점검 (프레임워크와 무관 — 신호가 있으면 반드시 한다).** 아래 한 줄을 돌려 **신호가 하나라도 잡히면** `references/framework-rules.md` 의 **§10(Firebase / 외부 PaaS)** 과 **§10-2(Supabase — DB 는 사내 Postgres 만, Storage 는 anon key 허용)** 를 읽고 그 절의 판정·문구를 따른다.
+   ```bash
+   grep -rlniE '@supabase/supabase-js|supabase\.co|pooler\.supabase\.com|firebase|gviz/tq|script\.google\.com/macros' . \
+     --include='*.js' --include='*.jsx' --include='*.ts' --include='*.tsx' --include='*.html' --include='*.vue' \
+     --include='*.py' --include='*.json' --include='*.env*' 2>/dev/null | grep -viE '/(node_modules|\.venv|dist|build)/' | head
+   ls -1 vercel.json netlify.toml render.yaml firebase.json .firebaserc app.yaml Procfile fly.toml railway.json 2>/dev/null
+   ```
+   - **§10·§10-2 는 프레임워크 섹션이 아니라서 2번 규칙만으로는 절대 읽히지 않는다.** 그래서 이 단계가 따로 있다 — **건너뛰면 규칙이 있어도 안 읽혀서, 모델이 일반 상식으로 틀린 안내(예: Supabase 를 보고 "RLS 정책을 강화하세요")를 만들어 낸다.** 실제로 그 사고가 있었다.
+   - **Supabase 는 사내가 제공하는 저장소이므로 Firebase 처럼 일괄 차단하지 않는다.** §10-2 의 표로 **DB 접근(`.from(`/`.rpc(`/`/rest/v1/`)** 과 **Storage 접근(`.storage.from(`//storage/v1/object/`)** 을 갈라, **DB 만** 위반으로 올린다. **project ref 목록은 어디에도 없다** — 사내/사외가 아니라 **접근 방식**으로 판정하므로 프로젝트가 늘어도 규칙을 고칠 일이 없다.
+   - 신호가 없으면 이 단계는 넘어간다(0토큰 — grep 만).
 3. 오탐 가이드(owasp-checklist §3) 적용: 예시/테스트/주석/placeholder는 "추정"으로 표기.
 - **보안 축 판정:** 엔진 verdict를 기준으로 한다. 결과는 통과 / 주의 / 차단 중 하나.
   - **상향:** LLM 심화에서 **치명을 새로 발견 → 차단**, **높음을 새로 발견 → 주의** 로 올린다.
@@ -64,6 +74,7 @@ node -e 'JSON.parse(require("fs").readFileSync(".fursys-deploy-hub/_engine.json"
   - **안전 가드(반드시 지킨다):**
     1. **확신할 때만 강등한다.** 조금이라도 실제 비밀일 가능성이 있으면 강등하지 말고 **그대로 `blocked` 유지**(기본값 = 막기).
     2. **`inGitHistory:true`(git 이력에 실제 커밋된 값) 및 명백한 실제 키(살아있는 API 키·private key 등)는 절대 오탐으로 강등하지 않는다** — 이력 유출은 폐기·재발급 대상이지 오탐이 아니다.
+       - **(supapolicy) 구형 Supabase anon 키가 JWT 라서 `SEC-07`(치명)에 걸리는 경우도 강등하지 않는다.** 공개 전제 값이라 유출은 아니지만, **`service_role` 키(진짜 치명)와 겉모양이 같아** 강등을 허용하면 진짜 시크릿이 조용히 통과할 수 있다. 막고 사람이 보게 하는 편이 안전하다 — 대신 **무슨 값인지 리포트에 설명해** 예외 승인이 빨리 되게 한다(문구·조건은 `references/framework-rules.md §10-2`).
     3. **강등한 finding 은 리포트에 "오탐으로 판단 — &lt;근거&gt;" 로 표기**해 감사 가능하게 남긴다.
 
 ## 4) 🚀 배포 가능성 (Bash 결정적 + LLM)

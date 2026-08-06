@@ -67,6 +67,7 @@
 6. **외부 서비스 자격증명 → 질문**(추측·생성 불가). `*_API_KEY` · `*_TOKEN` · `*_ACCESS_KEY` · fgdw 가 아닌 외부 `*_PASSWORD`/`*_SECRET`(URL·호스트가 사외) · **Supabase 등 외부 서비스 접속값**(`SUPABASE_URL`/`SUPABASE_SERVICE_ROLE_KEY`/`SUPABASE_ANON_KEY`/외부 `DATABASE_URL` 류) → `note:"ask"`.
    > "이 앱이 '○○'(쉬운 설명) 값을 필요로 하는데 아직 없어요. 값이 있으면 붙여넣어 주세요."
    - **강제 게이트:** 배포 시 이 값이 비어 있으면 deploy 가 **배포 전에 반드시 묻는다**(`deploy` ④). 모델이 임의로 "선택값"이라 보고 건너뛰거나 빈 값으로 배포하지 않는다 — 비워두고 진행할지는 **사용자가 명시적으로 택할 때만**.
+   - **(supapolicy) Supabase 접속값은 "사내 발급분"이라 여기서 묻는 게 정상이다 — deploy 는 방식을 판정하지 않는다.** 사내는 **DB = Postgres 접속정보**(`postgresql://…pooler.supabase.com…` / `PG*`·`DATABASE_URL` 류)를 발급하고, **Storage = `URL + anon key`** 방식을 쓴다. 둘 다 사람만 아는 발급값이므로 `note:"ask"` 로 묻는다(추측·생성 불가). **"anon key 로 DB 를 쓰고 있다"는 구조 문제는 `deploy-check` 가 판정·안내한다**(`deploy-check/references/framework-rules.md §10-2`) — deploy 가 여기서 값을 받았다는 사실이 그 방식을 승인하는 뜻이 아니고, 반대로 deploy 가 값 받기를 거부해서 막을 일도 아니다(배포 직전에 값이 없으면 앱이 뜨지 못한다). 역할 분리: **판정·전환 안내 = deploy-check, 값 주입 = deploy.**
 7. **그 외 일반값 → 자동(묻지 않음).** `NODE_ENV=production`, 포트(Dockerfile `EXPOSE`/기본), 공개 URL 등.
 
 ## 3. class 자동 분류 (사용자에게 묻지 않음)

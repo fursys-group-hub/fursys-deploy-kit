@@ -14,7 +14,7 @@
 7. Django (`django`)
 8. 공통 — Dockerfile 점검 (모든 프레임워크 공통)
 9. Flask (엔진은 `unknown`/Python 으로 감지 — Python 앱이면 함께 본다)
-10. Firebase / 외부 PaaS 의존 (사내 부적합 — 차단)
+10. Firebase / 외부 PaaS 의존 (사내 부적합 — 차단) · **10-2. Supabase — DB 는 Postgres 접속만(키 방식 차단) · Storage 는 키 방식 정상**
 11. Express / 일반 Node 백엔드 (`express`/`node`)
 
 > **엔진 0토큰 탐지와의 연계(라운드5):** 아래 보안 점검 중 일부는 이제 `fdh-engine` 이 결정적으로 잡아 `_engine.json` finding 으로 올린다 — 중복으로 다시 finding 을 만들지 말고(엔진이 정본), 엔진이 못 잡은 결만 LLM 으로 더한다.
@@ -336,9 +336,11 @@ fi
 ### 점검 신호
 - **외부 호스팅 배포 설정 파일 존재**: `vercel.json`·`netlify.toml`·`render.yaml`(Render)·`firebase.json`(hosting)·`.firebaserc`·`app.yaml`(GAE)·`Procfile`(Heroku)·`fly.toml`(Fly.io)·`railway.json`(Railway) 등 → 사내 Coolify 단일 컨테이너 + Dockerfile 로 전환 필요(높음).
 - **GitHub Actions 등 외부 CI/CD 워크플로우**(item33): `.github/workflows/*.yml` 에 **외부 호스팅 배포 단계**가 있으면(예: `amondnet/vercel-action`·`nwtgck/actions-netlify`·`FirebaseExtended/action-hosting-deploy`·`render deploy`·`flyctl deploy`·`aws s3 sync`·외부 PaaS 토큰 사용) 사내 정책 위반(높음) → 배포는 사내 Coolify(git push 자동) 전제, 사내 CI 는 GitLab(`git.fursys.com`) 을 쓴다. **단순 테스트/린트만 도는 `.github/workflows` 는 위반 아님** — 배포·릴리스 스텝이 외부 호스팅을 가리키는 경우만 경고(과탐 주의).
-- **Firebase 클라이언트 SDK 로 백엔드 대체**: `firebase/firestore`·`firebase/auth`·`firebase/storage` 직접 호출로 DB/인증/스토리지를 외부 Firebase 에 의존 → 데이터가 사외로 나간다. 사내 백엔드(ai-hub 등)·fgdw 로 대체 검토(높음).
+- **Firebase 클라이언트 SDK 로 백엔드 대체**: `firebase/firestore`·`firebase/auth`·`firebase/storage` 직접 호출로 DB/인증/스토리지를 외부 Firebase 에 의존 → **회사 데이터가 사외에 저장된다** → **치명 → 배포 차단**(§10-2 의 "사외 저장" 판정과 동일 기준 — 저장소가 Firebase 냐 사외 Supabase 냐만 다르다). 사내 DB/스토리지 발급받아 이전해야 풀린다(**신청·문의는 AI추진팀** · 안내 문서 https://ai-library.hub.fursys.com/guides/data-db/supabase). **배포될수록 사외에 데이터가 더 쌓이므로 옮기기 전에는 막는 것이 맞다.**
+  - 단 **Firebase 를 데이터 저장이 아닌 용도로만** 쓰는 경우(예: 알림용 FCM 토큰만)는 사외 저장이 아니므로 치명이 아니다 — 높음으로 안내한다. 판단 기준은 **"회사 자료가 저기 쌓이는가"** 다.
 - **Firebase Admin SDK 서비스계정 키**: `firebase-adminsdk-*.json`·`serviceAccountKey.json` 이 repo 에 있으면 **치명**(개인키 git 노출 — 엔진 `Service Account Key in Git` 으로 잡힌다). 즉시 폐기·재발급.
 - **외부 서버리스/Edge 함수**: `functions/`(Firebase Functions)·`api/`(Vercel Functions)·Cloudflare Workers(`wrangler.toml`) → 사내 컨테이너 단일 앱으로 합치기 안내(높음).
+- **Supabase 는 §10-2 로 간다** — Supabase 는 사내가 **실제로 제공하는** 저장소이므로 Firebase 처럼 일괄 차단하면 안 된다. DB 냐 Storage 냐로 갈리고, 사내 프로젝트냐 개인 프로젝트냐로 또 갈린다. 아래 §10-2 를 반드시 읽고 판정할 것.
 
 ### 대체 안내(쉬운 우리말)
 - "이 앱은 외부 호스팅/외부 데이터베이스(Firebase 등)에 기대고 있어요. 사내 보안 정책상 외부 호스팅은 쓸 수 없어, 사내 서버(컨테이너)와 사내 데이터 저장소로 옮겨야 해요." 라고 알리고, 외부 의존을 어디서 쓰는지(파일·기능) 짚어 준다. **외부 호스팅으로 배포하는 방법은 안내하지 않는다.**
@@ -360,3 +362,124 @@ grep -rnoE 'location\.hostname[^\n]{0,40}(includes|indexOf|===|==)' . \
 - **판정:** 위 신호가 있고 **동시에 사내 경로(`/api/...`)로도 접근**하면 = 전환 과도기(이중 백엔드). → **"구조 미완" 경고(중간)를 리포트에 별도 표시**한다. **verdict 는 막지 않는다**(치명이 이미 해소됐으면 ok 유지 — deploy-readiness §7 불변). 화면 문구: "보안상 급한 문제(노출된 키)는 막았어요. **다만 이 앱은 예전(외부 서비스) 방식과 새(사내) 방식이 섞여 있어**, 일부 화면은 사내에서 데이터가 안 나올 수 있어요. 구조를 사내 방식 하나로 정리하는 건 앱을 만든 분이 결정해 주셔야 해요(어디를 정리할지 짚어 드릴게요)." + 구 클라이언트/분기 위치를 짚어 준다.
 - **key→`''` 의 한계 명시(item61):** deploy-fix 가 외부 SaaS 키를 빈 값/env 로 만들어 "치명 해소"가 됐어도, **그 키를 쓰던 기능은 여전히 외부 서비스를 호출**하려 한다(값만 비었을 뿐 코드 경로는 살아 있음) → 인트라넷에서 실패. "키를 뺐다=해결"이 아니라 **"그 기능을 사내 방식으로 바꿔야 완성"** 임을 위 경고로 알린다. (이건 §9-2 정적/내부 API 판정과 짝 — §9 는 내부/localhost, §10 은 외부 SaaS 직접의존.)
 - **(item52) 외부 CDN 이미지 대량 직접참조 → 낮음(방화벽서 깨질 수 있음).** `<img src="https://<외부CDN>/...">` 를 대량 인라인(예 sidiz 342개)하면 사내 방화벽에서 외부 CDN 이 막힐 때 이미지가 안 뜬다. 배포는 되고 기능은 살아있으니 **낮음(경고만)** — "이미지를 외부 주소에서 불러와요. 사내망에서 외부가 막히면 이미지가 안 보일 수 있어요(기능엔 지장 없음). 자주 쓰는 이미지는 앱에 포함하는 게 안전해요." 소수(로고 1~2개 등)면 노이즈이니 **다수(수십 개↑)일 때만** 언급.
+
+---
+
+## 10-2. Supabase — DB 는 Postgres 접속만(키 방식은 차단) · Storage 는 키 방식이 정상 (supapolicy)
+
+> Supabase 는 **사내가 실제로 제공하는** 저장소다(Firebase 처럼 일괄 차단 대상이 아니다). 그래서 "Supabase 를 쓴다"가 아니라 **"어떻게 쓰나"** 로 판정한다.
+>
+> **사내가 허용하는 DB 접근 방식은 Postgres 접속(서버사이드) 하나뿐이다.** 그러므로:
+> 1. **DB 를 `URL + 키` 로 접근하면 → 치명 → 배포 차단.** 프로젝트가 사내든 개인이든 상관없다(방식 자체가 위반). **개인 Supabase 는 대개 이 형태라 여기서 걸린다 — 프로젝트 목록 없이도 잡힌다.**
+> 2. **Storage 는 `URL + publishable/anon key` 가 사내 운영 방식이라 정상**이다. 절대 같이 묶어 잡지 말 것.
+>
+> 그래서 이 절의 실무는 **"DB 호출인가 Storage 호출인가"를 가르는 것**이다 — 그게 전부다. 근거·불변식은 `docs/CONTRACTS.md §13`.
+
+### ⚠️ 먼저 알아야 할 것 — **방식은 검토가 판정하고, 사내/사외(ref)는 서버가 판정한다**
+사내 Supabase **도 Supabase 클라우드**다. 사내 프로젝트도 `*.supabase.co` / `aws-*.pooler.supabase.com` 을 쓴다. 그래서 **`*.supabase.co` 가 보이면 외부 → 차단, 이라고 판정하면 사내 앱을 오탐한다.**
+
+사내/개인을 가르는 유일한 값은 **project ref**(주소·접속문자열의 20자 식별자)인데, **그 목록을 이 문서에 적지 않는다.**
+- 적어 두면 사내 Supabase 프로젝트가 늘 때마다 이 파일을 고쳐야 하고, **플러그인이 갱신되기 전까지 정상 사내 앱한테 "사외라 차단"이라고 말하게 된다.** 목록이 여러 곳에 복사되는 순간 갱신이 어긋난다.
+- **그래서 ref 로 사내/사외를 판정하지 않는다.** 대신 **방식으로 판정한다** — 사내가 허용하는 DB 접근은 Postgres 접속 하나뿐이므로, `URL + 키` 로 테이블을 읽고 쓰면 **어느 프로젝트든 위반**이다(아래 판정 절). **목록이 필요 없으니 프로젝트가 늘어도 이 문서를 고칠 일이 없다.**
+- **검토(여기)의 역할:** ① **DB 접근인지 Storage 접근인지 가르고**(코드를 읽어야만 알 수 있는 일이라 이게 검토의 몫이다), ② `URL + 키` 로 DB 를 쓰면 **치명으로 올려 배포를 막는다**, ③ 발견한 project ref 는 **리포트에 적어 사용자가 확인하게** 한다(단정하지 않는다).
+- 사내 DB(schema)·Storage(bucket) 는 신청해서 **발급**받는다. 코드에 있는 schema/bucket 이름이 발급분인지는 **검토자가 알 수 없다**(발급 대장은 사내 Supabase 의 `bot_admin` 에 있고 서버만 읽는다) — 안내에서 "발급받은" 이라고만 쓰고 대조는 서버·관리자에게 맡긴다.
+
+#### 사내 발급분 지문 — 이름 형태로 알아본다 (값이 아니라 형태만 본다)
+| 용도 | 형태 | 핵심 지문 |
+|---|---|---|
+| **DB(허용된 유일한 DB 방식)** | `postgresql://app_<YYMMDD>_<코드>_user.<사내ref>:<비밀번호>@aws-<n>-ap-northeast-2.pooler.supabase.com:5432/postgres` | **username 이 `<발급유저>.<ref>` 형태**(Supabase pooler 규약) — `.` 뒤 ref 로 사내/개인을 가른다 |
+| **Storage(허용)** | `https://<사내ref>.supabase.co` + **publishable key** `sb_publishable_…` + 버킷 `bkt_<YYMMDD>_<코드>` | `sb_publishable_` 은 Supabase **신규 키 형식**(구 `anon` 키의 후신)이며 **공개 전제 값** — 소스에 있든 env 에 있든 보안 문제가 아니다. JWT 가 아니라 엔진에도 안 걸린다 |
+- ⚠️ **`anon`/`sb_publishable_` 키는 소스에 있어도 보안 문제가 아니다.** Supabase 가 **공개하라고 만든 값**이고, 프론트엔드 앱이면 env(`VITE_*`/`NEXT_PUBLIC_*`)로 빼도 **번들에 인라인돼 어차피 브라우저에 간다** — 보안상 얻는 게 없다. **"키가 노출됐다"로 finding 을 만들지 말 것.** 보안은 그 키가 아니라 프로젝트 쪽 정책이 지킨다.
+  - 다만 **구형 anon 키는 JWT 형태라 엔진에 걸려 배포가 막힌다** — 그건 값의 위험이 아니라 모양 때문이며, 처리는 아래 절을 따른다.
+  - **`service_role` 키는 정반대다.** 브라우저에 **가면 안 되는** 값이라 `VITE_*`/`NEXT_PUBLIC_*` 에 들어가면 엔진이 `Secret in Build-time Variable`(**치명**)로 잡고, 그게 맞다. `sb_secret_…`·`SUPABASE_SERVICE_ROLE_KEY` 도 같다.
+
+#### 구형 JWT anon 키가 엔진 `SEC-07`(치명)에 걸릴 때 — **신형 키로 교체가 정답**
+Supabase 는 키 체계를 바꿨다. 판정 전에 **어느 세대의 키인지** 먼저 본다:
+
+| 세대 | 형태 | 엔진 SEC-07 | 상태 |
+|---|---|---|---|
+| **신형** | `sb_publishable_…` / `sb_secret_…` | JWT 가 아니라 **안 걸림** | 현행. 사내 발급도 이것 |
+| **구형(legacy)** | `eyJ….eyJ….…`(JWT) — `anon` / `service_role` | `eyJ` 패턴에 **걸림(치명)** | **2026년 말 폐기 예정** |
+
+- **2025-11-01 이후 새로 만든 Supabase 프로젝트에는 legacy anon/service_role 키가 아예 없다.** 사내 발급 Storage 접속값도 `sb_publishable_…`(신형)이다 → **사내 절차대로 발급받아 쓰는 앱은 이 충돌을 겪지 않는다.**
+- 그래서 **구형 JWT anon 키가 보인다는 것 자체가 신호**다 — 대개 **개인 프로젝트(2025-11 이전 생성)** 를 쓰던 앱이다. §10-2 의 DB/Storage·사내여부 판정을 먼저 하고, 그 결과를 우선 보고한다.
+
+**안내(우선순위 순):**
+1. **신형 키로 교체하세요** — 어차피 **2026년 말에 legacy 키가 폐기**되므로 지금 바꾸는 게 정답이다. Supabase 대시보드에서 발급하며 `anon` → `sb_publishable_…` 로 값만 바꾸면 되고 **RLS·권한은 동일하게 동작**한다(병행 지원 기간이라 점진 교체 가능). 신형 키는 JWT 가 아니라 **SEC-07 도 자연히 사라진다.**
+2. (교체가 당장 어려우면) **설정값(env)으로 빼면 통과한다** — `.env` 는 `.gitignore` 대상이라 엔진이 아예 읽지 않고(`scanner.ts` gitDeployableSet), 배포 시 빌드 변수로 주입돼 동작은 그대로다. **이건 보안 조치가 아니라 임시 우회**임을 그대로 말한다.
+- **검토가 SEC-07 을 오탐으로 강등하지는 않는다.** `service_role` 키(RLS 를 통째 우회하는 **진짜 치명**)와 JWT 겉모양이 같아, 강등을 허용하면 진짜 시크릿이 조용히 통과할 여지가 생긴다.
+- **`"role":"service_role"` / `sb_secret_…` / `SUPABASE_SERVICE_ROLE_KEY` 에는 위 안내를 하지 않는다.** 그건 env 로 옮기는 것으로 끝나지 않고 **폐기·재발급** 대상이며, 브라우저 쪽 코드에 있으면 안 된다.
+
+문구 예: *"이 값은 Supabase 의 **옛날 방식 공개키**예요. 위험한 비밀번호는 아니지만 **올해 말에 없어질 예정**이라, 새 방식 키(`sb_publishable_...`)로 바꾸시는 게 좋아요 — 값만 바꾸면 되고 동작은 그대로예요. 지금 자동 검사는 이 옛 키를 진짜 비밀키와 구분하지 못해서 배포를 막고 있어요."*
+
+### 점검 신호 — DB 접근인가 Storage 접근인가 (이 구분이 이 절의 전부)
+같은 `createClient()` 클라이언트가 DB·Storage 를 **둘 다** 쓴다. **클라이언트가 있다는 것만으로 판정하면 Storage 정상 사용까지 위반으로 잡는다(과탐).** 호출 지점을 봐야 한다.
+
+| 무엇 | 신호 | 판정 |
+|---|---|---|
+| **DB 접근** | `.from('테이블')` · `.rpc(` · `.select(`/`.insert(`/`.update(`/`.delete(` 체인 · REST `/rest/v1/` | **위반** — `URL + anon key` 로 DB 를 쓰고 있다 |
+| **Storage 접근** | `.storage.from(` · `/storage/v1/object/` · `getPublicUrl(`/`createSignedUrl(`/`.upload(` | **정상** — anon key 가 사내 운영 방식 |
+| **사내 Postgres 접속** | `pg`/`postgres`/`psycopg`/Prisma 등으로 `postgresql://…pooler.supabase.com…` 접속, **서버사이드 코드에서** | **정상** — 이게 허용된 유일한 DB 방식 |
+
+```bash
+# ① DB 접근(위반 후보) — .from(/.rpc( 호출 지점
+grep -rnoE '\.(from|rpc)\(' . --include='*.js' --include='*.jsx' --include='*.ts' --include='*.tsx' \
+  --include='*.html' --include='*.vue' 2>/dev/null | grep -viE '/(node_modules|\.venv|dist|build)/' | head -20
+# ② Storage 접근(정상) — 위 결과에서 .storage.from( 인 줄은 제외해야 한다
+grep -rnoE '\.storage\.from\(|/storage/v1/object/' . --include='*.js' --include='*.jsx' --include='*.ts' \
+  --include='*.tsx' --include='*.html' --include='*.vue' 2>/dev/null | grep -viE '/(node_modules|\.venv|dist|build)/' | head -20
+# ③ project ref 수집 — **사내/사외를 여기서 판정하지 말 것.** 목록은 배포 서버가 갖는다.
+#    찾은 값을 리포트에 적어 사용자가 확인하게만 한다(§ 위 "먼저 알아야 할 것").
+grep -rnoE '[a-z0-9]{20}\.supabase\.co|[^:/@[:space:]]*\.[a-z0-9]{20}[:@]' . --include='*.js' --include='*.jsx' \
+  --include='*.ts' --include='*.tsx' --include='*.html' --include='*.vue' --include='*.env*' --include='*.py' \
+  2>/dev/null | grep -viE '/(node_modules|\.venv|dist|build)/' | head -20
+```
+- **`.from(` 은 Supabase 전용이 아니다** — 다른 라이브러리·자체 함수에도 흔하다. `@supabase/supabase-js` 로 만든 클라이언트 변수(`supabase.from(...)`)를 타고 있는지 확인하고, 아니면 세지 말 것(과탐).
+- **한 앱에서 DB·Storage 를 같이 쓰면 DB 부분만 위반으로 잡는다.** "Supabase 를 쓴다" 가 아니라 "Supabase 로 **테이블을 읽고 쓴다**" 가 문제다.
+
+### 판정 (severity·게이트) — **1순위는 "어떤 방식으로 DB 를 쓰나"**
+
+| 상황 | 판정 | 배포 |
+|---|---|---|
+| **DB 를 `URL + 키` 방식으로 접근** (`.from(`/`.rpc(`/`/rest/v1/`) — **프로젝트 무관** | **치명** | **차단** |
+| Firebase(Firestore/Auth/Storage)·기타 외부 DB 에 데이터 저장 | **치명** | **차단** (§10) |
+| project ref 가 보이는데 사내 프로젝트가 아님 | **치명** | **차단** |
+| **Postgres 접속(서버사이드)** 으로 DB | 문제 없음 | 통과 |
+| **Storage** 를 `URL + publishable/anon key` 로 | 문제 없음 | 통과 |
+
+#### ⭐ 방식으로 판정한다 — ref 목록이 없어도 개인 DB 는 잡힌다
+**사내가 허용하는 DB 접근 방식은 Postgres 접속 하나뿐이다.** 그러므로 `URL + 키` 로 테이블을 읽고 쓰는 코드는 **어느 프로젝트에 붙어 있든 허용된 방식이 아니다** → **치명 → 배포 차단.**
+- **이게 개인 Supabase 를 잡는 주 신호다.** 개인이 Supabase 를 쓰면 대개 `createClient(URL, anonKey)` + `.from('테이블')` 형태이므로, 프로젝트 목록을 몰라도 여기서 걸린다.
+- **사내 프로젝트인데 이 방식을 쓰는 앱도 같이 막힌다.** 의도한 결과다 — 사내 정책이 "Postgres 접속만" 이므로 프로젝트가 사내인지와 무관하게 방식 자체가 위반이다. (사내로 옮기는 중인 앱도 여기서 멈춘다. 사정이 있으면 IT본부 예외 승인으로 푼다.)
+- **그래서 검토는 ref 목록이 필요 없다.** 코드만 읽으면 되므로 사내 Supabase 프로젝트가 늘어도 이 규칙은 손댈 필요가 없다.
+
+#### project ref 는 보이면 보조로 쓴다 — 추정으로 막지 않는다
+`SUPABASE_URL`/`DATABASE_URL` 값이 **Coolify 설정값에만** 있으면 project ref 가 repo 어디에도 없다(**검토가 시키는 대로 값을 env 로 뺀 앱일수록 이 상태**이고, 엔진은 gitignore 된 파일을 아예 안 읽는다 — `scanner.ts` gitDeployableSet).
+- **ref 를 못 찾았다는 이유로 치명을 만들지 않는다.** 안 보인다고 사외로 단정하면 정상 사내 앱이 막힌다.
+- **사내 프로젝트 목록은 어디에도 없다**(프로젝트가 늘 때마다 고쳐야 하고, 안 고치면 정상 앱을 오차단한다). 발견한 ref 는 **리포트에 적어 사용자가 확인하게** 할 뿐, 그걸로 판정하지 않는다.
+- 다만 **명백히 사외인 정황**(예: 신청서에 개인 Supabase 로 신고돼 있음, 코드 주석·README 에 개인 계정 명시)이 함께 보이면 치명으로 올려도 된다. **추정만으로는 올리지 않는다.**
+
+#### finding 을 만들지 않는 경우 (과탐이 곧 신뢰 상실이다)
+Storage 만 `URL + 키` 로 쓰거나, 서버사이드에서 Postgres 로 접속하는 코드는 **정상이다. 아무것도 올리지 않는다.**
+
+### 🚫 이렇게 안내하지 말 것
+- **"RLS 정책을 강화하세요" · "테이블 권한/정책을 점검하세요" 를 해법으로 제시하지 않는다.** RLS 는 "anon key 로 DB 를 계속 쓴다" 는 전제 위의 완화책이고, 사내 정책은 **그 전제 자체를 허용하지 않는다.** 해법은 언제나 **"DB 호출을 서버사이드 Postgres 접속으로 옮긴다"** 다.
+- **anon key 를 env 로 빼는 것으로 「DB 위반이 해결됐다」고 말하지 않는다** — 그건 엔진 오탐(SEC-07)을 푼 것뿐이고, **브라우저에서 DB 를 부른다는 구조는 그대로**다. 둘은 별개 항목이니 각각 보고한다. (`deploy-fix` 가 키를 빈 값으로 만들어 "치명 해소" 해도 구조는 그대로 — §10 전환 과도기 절과 같은 함정.)
+- Storage 를 DB 와 같이 묶어 "Supabase 를 걷어내세요" 라고 하지 않는다(Storage 는 정상 방식이다).
+
+### 대체 안내(쉬운 우리말) — 두 경우를 섞어 쓰지 말 것
+
+**(A) 사외 프로젝트 = 치명·차단인 경우** — "배포가 막혔다"를 분명히 하고, 무엇을 해야 풀리는지까지 준다:
+> "이 앱은 **회사 밖 데이터 저장소**에 데이터를 두고 있어요. 회사 자료가 사외에 쌓이게 돼서 **사내 서버에는 이대로 올릴 수 없어요**(배포가 막혀요).
+> 사내에서 쓰는 **데이터베이스와 파일 저장소를 발급**받아 옮겨야 해요 — **신청은 AI추진팀**에 하시면 되고, 방법은 여기 정리돼 있어요: https://ai-library.hub.fursys.com/guides/data-db/supabase
+> 옮기고 나서 다시 검토하면 배포할 수 있어요."
+- 어디서 외부 저장소를 쓰는지(파일·줄)를 짚어 준다. **"외부에 그대로 두고 쓰는 방법"은 절대 안내하지 않는다.**
+
+**(B) DB 를 `URL + 키` 로 쓰는 경우 = 치명·차단** — 무엇을 해야 풀리는지까지 준다:
+> "이 앱은 **데이터베이스를 브라우저에서 직접**(주소 + 공개키 방식) 쓰고 있어서 **사내 서버에 올릴 수 없어요.**
+> 사내에서는 데이터베이스를 이렇게 쓰지 않아요. **접속정보(Postgres)** 를 발급해 드리고, 앱의 **서버 쪽 코드에서** 그 접속정보로 연결하는 방식만 허용해요.
+> 데이터를 읽고 쓰는 부분(`아래 위치`)을 **서버 쪽(API)으로 옮기고** 화면은 그 API 를 부르도록 바꿔 주세요. 접속정보는 배포할 때 넣어 드릴게요(값을 코드에 적지 마세요).
+> **파일 저장(이미지·첨부) 기능은 지금 방식 그대로 두셔도 돼요** — 사내도 파일 저장은 주소 + 공개키 방식으로 쓰고 있어요.
+> 사내 데이터베이스 발급 신청은 **AI추진팀**: https://ai-library.hub.fursys.com/guides/data-db/supabase"
+- DB 호출 위치(파일·줄)를 짚어 준다. **Storage 호출 위치는 짚지 않는다**(정상이므로 불필요한 불안만 준다).
+- **"조금만 고치면 된다"는 인상을 주지 않는다** — 화면에서 직접 부르던 걸 서버로 옮기는 일이라 앱 구조가 바뀐다. 다만 **파일 저장은 그대로**라는 점은 꼭 같이 말해 준다(전부 뜯어고쳐야 한다고 오해하기 쉽다).
