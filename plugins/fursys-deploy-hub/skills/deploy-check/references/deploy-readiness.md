@@ -14,7 +14,7 @@
 4. 필수 실행 설정값(env) 누락
 4-1. 영속 볼륨 필요 감지 (단일 서비스 — `volumes_plan`)
 4-2. 볼륨 경로가 코드 WORKDIR 과 겹치면 안 됨 (재배포 코드 미반영 근본원인)
-5. HEALTHCHECK 권장 (+ localhost→IPv6 불일치 함정 — nginx·Node 공통)
+5. HEALTHCHECK 권장 (+ 5-1. localhost→IPv6 불일치 함정 — nginx·Node 공통 · 5-2. 대상 경로 점검 — 전용 경로인가·싸게 반환하는가)
 6. 설정값 종류 분류 (빌드 포함 / 일반 / 잠금)
 7. 배포가능 축 판정 규칙
 8. 설정값이 컨테이너 안인가 로컬 도구 전용인가 (scope 판정 — Dockerfile 앵커)
@@ -216,6 +216,86 @@ fi
 ```
 - 해당하면 **높음**(배포 후 롤백→404). 화면 문구: "상태 점검이 앱에 접속하지 못해 **배포가 되돌려질 수 있어요(롤백).** 점검 주소를 `127.0.0.1` 로 바꾸면 돼요." 자동수정 `type:"healthcheck-ipv4"`(구 `nginx-healthcheck` 포함 — HEALTHCHECK `localhost`→`127.0.0.1` 한 줄 + nginx custom conf 면 `listen [::]:80` 동반) — 상세는 `framework-rules.md` §4 ②-1.
 - **오탐 가드:** 앱이 이미 IPv6 도 듣거나(`listen('::')`·`listen [::]`), HEALTHCHECK 가 이미 `127.0.0.1`/`[::1]` 이면 경고 안 함. `0.0.0.0` 바인딩 + `localhost` HEALTHCHECK 조합일 때만 높음.
+
+---
+
+### 5-2. HEALTHCHECK 대상 점검 — 전용 경로인가 · 동작하는가 (item67, 있으면 중간)
+
+HEALTHCHECK 이 **있고 연결도 되는데**(§5-1 통과) 대상이 잘못된 경우. 빌드·서빙·화면이 전부 정상이라
+검토로 보이지 않는다. 점검 주기마다 테이블 전량이 DB→서버로 전송돼 egress 만 쌓이거나(sidiz-sitting-lab
+실사례 — **일 2.35GB**), 설정 한 줄에 대상이 404 가 되어 롤백된다.
+
+**1단계 — 대상 경로 추출 (결정적, 프레임워크 무관):**
+```bash
+# 주석이 아닌 HEALTHCHECK 문장을 백슬래시 줄이음까지 결합해 URL 경로만 뽑는다.
+# CRLF(\r) 제거 필수 — Windows 체크아웃 레포에서 줄이음 결합이 깨진다(실측: 미제거 시 27건 중 25건 추출 실패).
+# 주석 줄을 먼저 걸러야 한다 — 파일 상단 설명 주석의 'HEALTHCHECK' 를 먼저 집으면 실제 문장을 놓친다.
+tr -d '\r' < Dockerfile | awk '
+  /^[[:space:]]*#/ {next}
+  /^[[:space:]]*HEALTHCHECK/ {
+    s=$0
+    while (s ~ /\\[[:space:]]*$/ && (getline nx) > 0) { sub(/\\[[:space:]]*$/,"",s); s = s " " nx }
+    print s; exit
+  }' | grep -oE 'https?://[^ "'"'"')]+' | sed -E 's|https?://[^/]*||'
+```
+- `/`·`/index.html`·`/health`·`/healthz`·`/api/health`·`/_stcore/health`·`/actuator/health`·`/livez`·`/readyz` → **전용 경로로 인정, 통과** (**끝 슬래시 유무는 무시한다** — Django `APPEND_SLASH` 관례상 `/health/` 로 잡히는 게 정상이다)
+- 그 외 → 화면·업무용 엔드포인트를 빌려 쓴 것이므로 2단계
+- 단 `/` 는 **정적 서빙 증거**(`express.static`·`send_from_directory`·`StaticFiles`·nginx `root`/`try_files`)가 있을 때만 인정. Django/Flask 처럼 `/` 가 DB 로 페이지를 만드는 서버렌더링이면 2단계로 보낸다.
+
+**2단계 — 그 경로의 핸들러를 찾아 판정 (LLM).** 라우트 정의 문법이 프레임워크마다 달라
+(Express `app.get('/x')` · FastAPI `@app.get("/x")` · Flask `@app.route` · Django `urls.py`→`views.py` ·
+Spring `@GetMapping` · Next.js 파일기반) **이 단계를 단일 grep 으로 만들지 않는다** — Python·Java·Next.js
+앱에서 조용히 미발화해 "검사했는데 문제없음" 으로 보이는 게 가장 나쁘다.
+
+- **(a) 항상 200 인가:** 라우트 등록이 **조건부**인지 본다. 환경변수·디버그 플래그 분기 안에서 등록되면
+  그 조건이 거짓일 때 404 → 롤백. FastAPI `docs_url=... if ... else None`, Django `if settings.DEBUG`,
+  Express `if (process.env.NODE_ENV !== 'production')` 등 → **중간**.
+  화면 문구: "상태 점검 주소가 **설정에 따라 사라질 수 있어요.** 항상 열려 있는 전용 주소로 바꾸는 게 좋아요."
+- **(b) 싸게 반환하는가:** 핸들러가 상수·정적 파일 반환이거나 DB 접근이 `SELECT 1`·`count(*)`·`LIMIT 1`
+  수준이면 통과. **`SELECT *`·`LIMIT` 없는 조회·행 목록 반환**(`res.json(result.rows)` 등) → **중간**.
+  화면 문구: "상태 점검이 **데이터 조회 API** 를 30초마다 호출해서 **DB 통신량이 크게 발생할 수 있어요.**
+  가벼운 전용 주소로 바꾸는 게 좋아요."
+
+**(d) 점검 명령이 이미지에 있는가 (결정적):**
+```bash
+# 판정 기준은 HEALTHCHECK 이 도는 스테이지 = 멀티스테이지면 **마지막** FROM.
+# 빌더 alpine + 런타임 nginx/Debian 이 이 룰셋의 정준 골격(§1 ②-2·§4 ②)이라,
+# 첫 FROM 에 앵커하면 "alpine 이니 wget 있음" 으로 조용히 미탐한다.
+tr -d '\r' < Dockerfile | grep -iE '^[[:space:]]*FROM' | tail -1
+grep -iE 'HEALTHCHECK|^[[:space:]]+CMD' Dockerfile | grep -oE '\b(wget|curl)\b' | head -1
+grep -qiE 'apt-get install.*(wget|curl)|apk add.*(wget|curl)' Dockerfile   # 설치 줄 유무
+```
+**"Debian 계열" 로 뭉뚱그려 판정하지 않는다 — 같은 Debian 이라도 변종마다 정반대다.** 마지막 FROM 의
+이미지 이름으로 본다(설치 줄이 있으면 아래와 무관하게 통과):
+
+| 마지막 FROM | `wget` | `curl` | 판정 |
+|---|---|---|---|
+| `alpine:*` · `*-alpine` | ✅ busybox 내장 | ❌ | `curl` 을 쓰면 **높음**, `wget` 이면 통과 |
+| `nginx:*`(alpine 태그 제외) | ❌ | ❌ | 둘 중 무엇을 쓰든 **높음** |
+| `*-slim`(`node:*-slim`·`python:*-slim`) | ❌ | ❌ | **높음** |
+| `debian:*` · `ubuntu:*` | ❌ | ❌ | **높음** |
+| `node:<n>` · `python:<n>` (변종 접미사 없는 full) | ✅ | ✅ | **통과** — buildpack-deps 기반이라 둘 다 있다 |
+
+해당하면 **높음**(기동은 정상인데 헬스체크만 ExitCode 1 → 롤백. iloom-channel-sales-dashboard
+실사례 2026-08-24). **표에 이름이 없는 이미지는 경고하지 않는다**(아래 미검증 ② — 근거가 한 건뿐이라
+넓게 잡으면 `node:20` 같은 흔한 베이스에 불필요한 설치 층을 넣게 된다).
+
+**자동수정:** (a)(b) 는 **담지 않는다** — 앱 코드에 새 엔드포인트를 추가해야 하므로(`healthcheck-ipv4` 처럼
+한 줄 치환이 아니다) `deploy_fixes` 에 넣지 말고 복붙 프롬프트로만 안내. (d) 는 자동수정 가능 —
+`type:"healthcheck-cmd-missing"`(설치 한 줄. **반드시 `HEALTHCHECK` 이 속한 스테이지 = 마지막 `FROM`
+뒤에** 넣어야 한다. 지침·오탐 가드는 `../deploy-fix/SKILL.md` ⑤).
+규칙 상세·유형별 전용 경로 표는 `framework-rules.md` §8 item67.
+
+**실측(2026-08-25 · 사내 레포 43개 / HEALTHCHECK 27건):** 1단계 경로 추출 성공 27/27(파싱 실패 0).
+전용 경로 인정 23(정적 루트 15 · 전용 규약 8), 2단계 대상 4. 2단계 판정: Flask `/api/version`(상수 반환 → 통과) ·
+Next.js `/login`(`"use client"` 컴포넌트 → 통과) · FastAPI `/docs`(**(a) 위반**) ·
+Express+node:sqlite `/api/courses`(**(b) 위반 — `SELECT *` 무제한 + N+1**). **오탐 0 · 미탐 0**
+(수정 전 sidiz `/api/reports` 정상 검출).
+
+**미검증:** ① Django·Spring Boot 서버렌더링 앱이 표본에 없어 `/` 가 DB 를 타는 케이스는 실측하지 못했다.
+1단계의 "정적 서빙 증거" 가드가 그 대비다. ② **(d) 는 위 27건에 돌려보지 않았다** — 위 "오탐 0 · 미탐 0"
+은 1·2단계까지의 숫자이고, (d) 의 근거는 iloom-channel-sales-dashboard 한 건이다. 그래서 (d) 는 표에
+이름이 있는 이미지에만 경고하고 모르는 이미지는 통과시킨다(좁게 잡아 오탐을 만들지 않는 쪽).
 
 ---
 

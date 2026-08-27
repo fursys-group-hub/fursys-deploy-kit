@@ -51,7 +51,7 @@ COMMIT_NOW=$(git rev-parse HEAD 2>/dev/null || echo null)
 **보안 finding(`_engine.json`)** 과 **배포준비 문제(`last-verdict.json.deploy_fixes`)** 를 합쳐 **자동수정 대상**과 **사람 판단 필요(안내만)** 로 나눈다.
 - **자동수정 대상:**
   - `aiPrompt` 가 있는 **보안 finding**(`_engine.json` — 검토가 만든 복붙 수정 지침). LLM 이 그 지침대로 코드를 고칠 수 있는 것.
-  - **(deployfix2) `aiPrompt` 가 있는 배포준비 문제**(`last-verdict.json.deploy_fixes[]` — `type` 이 `copy-public`·`port`·`start-cmd`·`next-build-env`·`volume-perm`·`streamlit-config`·`secrets-to-env`·`static-folder`·`healthcheck-ipv4`(구 `nginx-healthcheck`)·`npm-ci-no-lock`·`cors-remove-same-origin`·`dockerfile` 등). 이것도 같은 자동수정 파이프라인으로 ⑤에서 고친다(public 폴더 생성·포트 맞춤·`.streamlit/config.toml` 생성·설정값 폴백·정적 폴더 좁히기 등). **소스 최소 변경 원칙**: 코드 변경 없이 설정파일/Dockerfile 로 풀 수 있으면 그 경로를 우선한다(⑤-4 참조).
+  - **(deployfix2) `aiPrompt` 가 있는 배포준비 문제**(`last-verdict.json.deploy_fixes[]` — `type` 이 `copy-public`·`port`·`start-cmd`·`next-build-env`·`volume-perm`·`streamlit-config`·`secrets-to-env`·`static-folder`·`healthcheck-ipv4`(구 `nginx-healthcheck`)·`npm-ci-no-lock`·`cors-remove-same-origin`·`healthcheck-cmd-missing`·`dockerfile` 등). 이것도 같은 자동수정 파이프라인으로 ⑤에서 고친다(public 폴더 생성·포트 맞춤·`.streamlit/config.toml` 생성·설정값 폴백·정적 폴더 좁히기 등). **소스 최소 변경 원칙**: 코드 변경 없이 설정파일/Dockerfile 로 풀 수 있으면 그 경로를 우선한다(⑤-4 참조).
 - **자동수정에서 제외(안내만):** 아래는 LLM 이 만들 수 없거나 위험한 값이라 자동수정·재시도 대상에서 뺀다.
   - `last-verdict.json.env_plan[]` 중 `note=="ask"` 인 항목(사람이 정하는 값 — 관리자 비밀번호 등).
   - 외부 서비스 자격증명(외부 API 키·토큰·사외 비밀번호 등).
@@ -97,6 +97,7 @@ node "$CLAUDE_PLUGIN_ROOT/skills/deploy-fix/scripts/plan-summary.mjs" .fursys-de
    - **`static-folder`(항목35 — Flask/FastAPI/Express 정적 루트가 서버 폴더 전체) → 최소 수정 + 안내:** 서버 루트 전체(소스·`.env`·설정)가 URL 로 노출되는 위험. **코드를 크게 뜯어고치지 않는다.** `aiPrompt` 대로 정적 폴더 인자만 안전한 전용 폴더로 좁히는 **한 줄 변경**(`static_folder="static"`·`StaticFiles(directory="static")`·`express.static("public")`)을 적용하고, 그 폴더가 없으면 함께 생성(빈 `.gitkeep`). **단, 공개 자산이 실제로 루트에 흩어져 있어 파일 이동이 필요한 경우(=`aiPrompt:null`·`message` 가 "공개 파일만 옮겨야 해요"로 안내)는 자동으로 파일을 옮기지 않는다** — ⑦에서 "어떤 파일이 외부 공개여도 되는지는 직접 정하셔서 `static/` 으로 옮겨 주세요"로 안내만 한다(공개 여부는 사람 판단). 한 줄 변경을 적용했으면 통보에 "정적 파일을 내보내는 폴더를 서버 전체에서 `static`(공개 전용 폴더)으로 좁혔어요 — 소스·설정이 외부에 노출되지 않게요." 를 넣는다.
    - **`streamlit-config` → `.streamlit/config.toml` 표준 생성:** 프로젝트 루트에 `.streamlit/config.toml` 이 없거나 표준 설정이 빠졌으면 생성·보강한다. **사내 표준(필수):** `[browser]\ngatherUsageStats = false`(텔레메트리 차단 — 사내 정책), `[server]\nheadless = true`, 포트가 Dockerfile `EXPOSE` 와 달라야 하면 `port = <EXPOSE 값>`. 기존 키는 보존(병합).
    - **`healthcheck-ipv4`(항목66 + R9-5 — `localhost` HEALTHCHECK IPv6 불일치, 구 `nginx-healthcheck` 포함) → 최소 치환:** Dockerfile `HEALTHCHECK` 이 `http://localhost/` 를 쓰는데 앱이 IPv4(`0.0.0.0`)만 청취하면(nginx custom conf 에 `listen [::]:80` 없음 **또는** Node `app.listen(PORT,'0.0.0.0')`·Python `--host 0.0.0.0` 등 서버 앱), alpine 의 `localhost`(`::1` IPv6 우선)가 연결 거부 → healthcheck 실패 → Coolify 롤백 → 404(빌드·서빙은 정상인데 자가진단만 실패 — fursys-import 실사례). **가장 안전·최소·프레임워크 무관 수정 = HEALTHCHECK 의 `localhost` → `127.0.0.1`(IPv4 명시) 한 줄 치환.** nginx custom conf(`*.conf`)가 있으면 그 `server {}` 의 `listen 80;` 옆에 `listen [::]:80;` 한 줄을 동반 추가한다(Node/일반 서버 앱은 conf 가 없으니 한 줄 치환으로 끝). **빌드·서빙·라우팅·바인딩 로직은 건드리지 않는다**(0.0.0.0 바인딩은 컨테이너 접속에 필요하니 그대로 둔다). 통보: "상태 점검이 앱에 접속하지 못해 배포가 되돌려지던 문제(롤백)를 고쳤어요 — 점검 주소를 `127.0.0.1` 로 바꿨어요." 상세는 `../deploy-check/references/framework-rules.md` §4 ②-1 · §8.
+   - **`healthcheck-cmd-missing`(item67 (d) — HEALTHCHECK 이 쓰는 명령이 런타임 이미지에 없음) → 설치 한 줄 추가(스테이지 주의):** `HEALTHCHECK` 이 `wget`/`curl` 을 쓰는데 그 명령이 이미지에 없으면 **기동·서빙은 정상인데 헬스체크만 ExitCode 1 로 실패**해 Coolify 가 unhealthy 로 보고 롤백한다(iloom-channel-sales-dashboard 실사례 2026-08-24). **⚠️ 반드시 `HEALTHCHECK` 이 속한 스테이지 = 멀티스테이지면 마지막 `FROM` 뒤에 넣는다** — 빌더 스테이지에 넣으면 최종 이미지에 안 남아 **아무것도 고쳐지지 않는데 증상이 똑같다**(같은 롤백이 반복돼 "고쳤어요" 가 오보가 된다 — `conn-string` 의 sidiz 오보와 같은 유형). **설치보다 작은 대안을 먼저 본다:** alpine 인데 `curl` 을 쓰면 `wget -q --spider` 로 **한 줄 치환**(busybox 내장 — 설치 불필요), Python 이미지면 `python -c "urllib.request.urlopen(...)"` 로 외부 명령 없이 푼다. 그래도 설치가 필요하면 Debian/slim 계열은 `RUN apt-get update && apt-get install -y --no-install-recommends curl && rm -rf /var/lib/apt/lists/*`, alpine 은 `RUN apk add --no-cache curl`(**패키지 매니저를 베이스에 맞춘다 — alpine 에 `apt-get` 을 쓰면 빌드가 깨진다**). **⚠️ 오탐 가드: alpine 은 `wget` 이 내장이고, `node:20`·`python:3.12` 같은 변종 접미사 없는 full 이미지는 buildpack-deps 기반이라 `wget`·`curl` 이 둘 다 있다 → 설치 줄을 넣지 않는다**(deploy-check 가 판정표로 이미 걸러 이 항목을 안 만들지만, 넘어왔더라도 여기서 한 번 더 확인한다). 빌드·서빙 로직과 다른 스테이지는 건드리지 않는다. 통보: "상태 점검에 쓰는 명령이 이미지에 없어서 배포가 되돌려지던 문제를 고쳤어요." 판정표는 `../deploy-check/references/deploy-readiness.md` §5-2 (d).
    - **`npm-ci-no-lock`(규칙 — `RUN npm ci` + `package-lock.json` 없음 → 첫 빌드 확정 실패) → `npm ci`→`npm install` 한 줄 치환:** Dockerfile 의 `RUN npm ci ...` 를 `RUN npm install ...`(뒤 옵션은 보존)로 **한 줄만** 바꾼다. **락파일을 새로 만들지 않는다**(Windows 개발 PC 락은 linux-musl 네이티브 의존을 누락해 alpine 에서 `npm ci` 가 깨지므로, 락 생성이 아니라 `npm install` 로 보충하는 게 맞다 — `../deploy-check/references/framework-rules.md` §1 ②-2 와 동일 방침). 빌드 로직·다른 단계는 건드리지 않는다. **⚠️ 오탐 가드(반드시): 이미 `npm install` 이거나 `package-lock.json` 이 존재하면 치환하지 않는다**(락파일이 있으면 `npm ci` 가 재현빌드에 오히려 안전 — 그대로 둔다). 통보: "도커 설정이 잠금 파일 없이 'npm ci' 를 써서 첫 빌드가 실패하던 걸 'npm install' 로 바꿨어요."
    - **`cors-remove-same-origin`(규칙 — 단일 컨테이너 same-origin 이라 CORS 불필요) → CORS 로직·import·관련 env 제거(확신 조건에서만):** 백엔드가 프론트를 같은 컨테이너에서 same-origin 으로 서빙하는 게 **확실할 때만**(deploy-check `deploy-readiness.md` §11 의 1·2·3 을 모두 충족해 이 항목이 만들어진 경우), 불필요한 CORS 를 제거한다: Express `app.use(cors(...))` 호출 + `const cors = require('cors')`/`import cors`(다른 데서 안 쓰면), NestJS `app.enableCors(...)` 한 줄, FastAPI `app.add_middleware(CORSMiddleware, ...)` 블록 + `from ... import CORSMiddleware`(미사용 시). 그 CORS 가 읽던 설정값(`CORS_ORIGIN`/`ALLOWED_ORIGINS` 류)이 **CORS 외 다른 곳에서 안 쓰이면** 코드 참조도 함께 제거한다(참조가 사라지면 ⑥ 재검토에서 `env_plan` 에서도 자동으로 빠진다 — 별도 env 조작 불필요). 통보: "화면과 데이터를 같은 서버(주소)에서 내보내는 구조라 필요 없던 교차출처 허용(CORS) 설정을 정리했어요."
      - **⚠️ 오탐 가드(코드 삭제라 필수 — 애매하면 제거하지 말 것):** ① 멀티서비스(`services.json` 존재)면 제거 금지. ② origin 화이트리스트에 **구체적 외부 도메인**이 있거나 별도 프론트 배포·외부 클라이언트 정황이 있으면 제거 금지(그 API 를 외부에서 부른다는 뜻). ③ 백엔드가 프론트를 same-origin 서빙하는지 확실치 않으면 제거 금지. 위 셋 중 하나라도 걸리면 **자동제거하지 말고 ⑦에서 "이 CORS 설정이 정말 필요 없는지 직접 확인해 주세요" 안내만** 한다(제거 안 해서 남는 무해한 CORS < 잘못 제거해 외부 클라이언트가 막히는 사고). deploy-check 가 이 확신 조건을 판정해 `cors-remove-same-origin` 을 만들 때만 자동제거 대상이며, 조건이 애매하면 deploy-check 가 경고만 하고 이 항목을 애초에 만들지 않는다.
@@ -178,10 +179,31 @@ node "$CLAUDE_PLUGIN_ROOT/skills/deploy-fix/scripts/plan-summary.mjs" --logs <�
    ```bash
    "$CLAUDE_PLUGIN_ROOT/skills/deploy/scripts/status.sh" "<app_id>" "<domain>"
    ```
+5-1. **(pgpublishfix) 재폴링이 `RUNNING`(기동 확인) 에 닿으면 그 자리에서 Playground 반영을 1회 실행한다** — ⑪ 결과 안내 **전**에 돌리고, 그 결과 한 줄을 ⑪ 문구에 얹는다(deploy ⑦-1→⑦-3 과 같은 구조).
+   - **왜 여기인가:** 첫 기동이 실패한 앱은 deploy ⑦-1 이 `FAILED` 로 끝나 ⑦-3 을 지나지 않는다. 여기서 고쳐 실제로 잘 떠도 **자동 반영이 발동할 자리가 없어** 관리자 수동 승인으로 새 버린다(2026-08-26 사례). 이 호출이 그 구멍을 막는다.
+   - **`<repo>` 확보(모드 B 는 repo 를 인자로 받지 않는다 — 반드시 이 방법을 쓴다):** 이 프로젝트의 `origin` 이 곧 방금 ⑩-4 의 저장(`git push`)으로 다시 올라간 그 repo 다(deploy ① 이 repo 를 정하는 것과 같은 근거).
+     ```bash
+     # <repo> 확보: 이 프로젝트의 origin = 방금 push 로 재배포한 그 repo
+     REPO_NAME="$(git remote get-url origin 2>/dev/null | sed -E 's#/+$##; s#\.git$##' | sed -E 's#.*[/:]##')"
+     ```
+     - **`REPO_NAME` 이 비면(git 프로젝트가 아니거나 origin 이 없으면) 호출을 조용히 건너뛴다 — 사용자에게 아무 말도 하지 않는다.** 다른 이름을 추측해 넣지 않는다(실패해도 수정·배포는 성공이고, 관리자가 화면에서 승인하는 기존 절차가 그대로 폴백이다).
+   - **호출은 1회만:**
+     ```bash
+     [ -n "$REPO_NAME" ] && "$CLAUDE_PLUGIN_ROOT/skills/deploy/scripts/publish.sh" "<app_id>" "fursys-group-hub/$REPO_NAME"
+     ```
+     (`[ -n "$REPO_NAME" ]` 가드는 필수다 — 빈 값이면 `"fursys-group-hub/"` 가 인자로 넘어가 USAGE 가드에 안 걸리고 `skipped` 로 끝나, ⑪이 "관리자가 따로 처리 중"이라는 사실과 다른 안내를 하게 된다. `$CLAUDE_PLUGIN_ROOT` 가 안 잡히면 ⑧의 `logs.sh` 폴백과 같은 형태로: `PB="$(find "$HOME/.claude/plugins" -path '*/fursys-deploy-hub/skills/deploy/scripts/publish.sh' 2>/dev/null | head -1)"; [ -n "$PB" ] && [ -n "$REPO_NAME" ] && "$PB" "<app_id>" "fursys-group-hub/$REPO_NAME"`)
+   - **`FAILED`·폴링 상한 초과·미결에서는 부르지 않는다.** 폴링 루프를 도는 동안에도 부르지 않는다 — **`RUNNING` 을 실제로 목격했을 때 딱 1회**다(안 뜨는 앱이 카탈로그에 "승인·보안 검토 통과" 로 올라가지 않게 하는 게 이 규칙의 목적이다).
+   - **첫 줄 결과 코드로만 분기**해 ⑪에 한 줄 얹는다(문구는 ⑪ 참조). 둘째 줄부터의 응답 내용은 사용자에게 보여주지 않는다. 어떤 결과가 나와도 수정·배포 흐름을 멈추거나 되돌리지 않는다.
 6. **라운드 상한 ≤2 · 진전 없으면 즉시 중단:** 다시 `FAILED` 면 새 로그로 **한 번만 더**(총 2라운드). 직전 대비 **진전 없음**(같은 에러 반복 / 로그에 의미 변화 없음 / 같은 실패 신호 반복)이면 **즉시 중단**한다.
 
 ## ⑪ 결과 안내 (한글, 쉬운 말)
 - **성공(`RUNNING`)** → "고쳤고 이번엔 잘 올라갔어요. 주소: `<https_url>`" (`LIVE_OK`/`LIVE_PENDING` 보조 줄로 접속 가능/예열 안내).
+  - **(pgpublishfix) ⑩-5-1 의 결과를 위 성공 문구 뒤에 한 줄 덧붙인다**(기존 문구는 그대로 두고 **덧붙이기** — 치환이 아니다). 문구는 deploy ⑦-3 과 **완전히 동일**하게 쓴다(새 문구를 짓지 않는다):
+    - **`PUBLISHED approved <url>`** → "**AI Hub Playground 등록도 자동으로 끝냈어요 ✓** 배포 주소가 등록되고, 보안 검토 통과 표시(인증 배지)와 승인까지 처리됐어요. 이제 Playground 목록에서 보여요." 이어서 **`<url>` 이 있으면** 다음 줄에 "**내 앱 보기:** `<url>`".
+    - **`PUBLISHED url_updated <url>`** → "**Playground 의 배포 주소를 최신으로 맞췄어요 ✓** (이미 승인된 앱이라 승인은 그대로예요.)" + 링크.
+    - **`PUBLISHED skipped`** → "Playground 쪽은 **관리자가 따로 처리 중인 상태**라 자동으로 건드리지 않았어요." (링크는 오지 않는다.)
+    - **`NOT_RUNNING` / `PUBLISH_UNAVAILABLE <code>`** → **아무 말도 하지 않는다.** 위 성공 문구만 그대로 낸다("반영에 실패했어요" 같은 말은 하지 않는다 — 수정·배포는 성공했고 관리자 수동 승인이 폴백이다).
+    - **주소를 추측해 짓지 않는다.** 링크는 스크립트가 준 값만 쓴다.
 - **미해결(2라운드/진전없음)** → "여기까진 제가 자동으로 고쳤어요. 남은 건 사람 판단이 필요해요." + 핵심 로그(가린 형태) + 다음 단계. **앱은 절대 지우지 않는다**(deploy ⑨ 원칙). 사람만 아는 값/외부 자격증명이 원인이면 "이 값은 ○○인데 제가 만들 수 없어요 — 알려주시거나 IT본부에 문의해 주세요"로 안내.
 - 진전 없어 중단이면 "방금 고친 게 마음에 안 들면 원래대로 되돌려 드릴 수 있어요"(스냅샷 복원)도 함께 안내한다.
 

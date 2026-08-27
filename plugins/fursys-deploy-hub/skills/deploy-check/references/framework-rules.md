@@ -172,6 +172,7 @@ CMD ["node", "server.js"]
 - 빌드 결과(`dist/`)는 정적 파일을 서빙하는 작은 웹서버(예: nginx, `serve`)로 컨테이너에서 띄운다. (외부 정적 호스팅 사용 금지 — 컨테이너 안에서 서빙.)
 - 포트: 정적 서버 포트(nginx 80 등)와 Dockerfile `EXPOSE` 일치.
 - 시작 방법: 멀티스테이지(빌드 → nginx/serve 로 복사) Dockerfile 권장. 운영 빌드에서 source map 비노출 권장.
+- **Vite 인데 Express 등 앱 서버가 `dist/` 를 함께 서빙하는 하이브리드면 §11(Express/Node)도 함께 적용한다.** 엔진은 `framework:"vite"` 로 잡지만 이 섹션의 "nginx/serve 로 정적 서빙" 전제가 맞지 않는다. HEALTHCHECK 전용 경로도 `/`(정적)가 아니라 앱 프로세스 쪽 `/api/health` 여야 한다(§8 item67 ①). sidiz-sitting-lab 실사례 — `vite` 로 감지됐으나 실제로는 Express 가 `dist/` 서빙 + API 를 함께 담당해, 참고할 표준이 없는 상태에서 데이터 API 가 헬스체크 대상으로 선택됐다.
 
 #### ②-1. `localhost` HEALTHCHECK = IPv6(`::1`) 불일치로 롤백 (item66 + R9-5 — nginx·정적, 그리고 모든 서버 앱 공통)
 > Vite→nginx 뿐 아니라 **순수 정적 HTML 을 nginx:alpine 으로 서빙하는 모든 앱**, 그리고 **`0.0.0.0`(IPv4)로 바인딩하는 모든 서버 앱**(Node/Express·Python uvicorn·Go 등 — 그쪽은 §8 공통 규칙에서도 다룬다) 공통이다.
@@ -284,6 +285,37 @@ fi
 - `ENV` 로 시크릿을 직접 박지 않았는지(반드시 런타임 주입).
 - `EXPOSE` 포트가 앱 실제 포트·사내 서버 설정과 일치하는지.
 - `HEALTHCHECK` 정의 권장. **(item R9-5 — 모든 서버 프레임워크 공통) HEALTHCHECK 는 `localhost` 대신 `127.0.0.1`(IPv4 명시)로 쓴다.** 앱이 `0.0.0.0`(IPv4 전용)으로 바인딩하는데(Node `app.listen(PORT,'0.0.0.0')`·Python uvicorn/gunicorn `--host 0.0.0.0`·Go 등) HEALTHCHECK 가 `wget/curl http://localhost/` 면, alpine 의 `localhost` 가 `::1`(IPv6) 을 먼저 시도해 **연결 거부 → unhealthy → Coolify 롤백 → 신규 앱 404**(빌드·서빙은 정상, 자가진단만 실패 — fursys-import 실사례). **`0.0.0.0` 바인딩 + HEALTHCHECK `localhost` 조합이면 높음** → `127.0.0.1` 로 한 줄 교정(자동수정 `type:"healthcheck-ipv4"`). 앱이 이미 IPv6 도 듣거나 HEALTHCHECK 가 이미 `127.0.0.1`/`[::1]` 이면 정상(오탐 가드). nginx 정적 케이스는 §4 ②-1(custom conf `listen [::]:80` 동반)로, 그 외 서버 앱은 여기 공통 규칙으로 본다. 탐지 grep 은 `../deploy-check/references/deploy-readiness.md` §5-1(B).
+- **(item67 — 모든 프레임워크 공통) HEALTHCHECK 은 두 가지를 본다: ① 전용 경로가 있는가 ② 그 경로가 헬스체크로서 동작하는가.**
+
+  **증상:** 빌드·서빙·화면이 전부 정상이라 검토로는 보이지 않는데, 점검 주기마다 테이블 전량이 DB→서버로 전송돼 egress 만 쌓인다(sidiz-sitting-lab 실사례 — `/api/reports` 를 30초마다 호출 → 112행 × 7.3KB × 2,880회 = **일 2.35GB**, 조직 내 최다 egress 유발 쿼리로 지목).
+
+  **① 전용 경로가 있는가.** 헬스체크는 **이 용도로만 존재하는 경로**를 찔러야 한다. 화면·업무용 엔드포인트를 빌려 쓰면 그 엔드포인트의 성격(비용·조건부 노출)이 그대로 헬스체크에 옮겨온다.
+
+  | 앱 유형 | 전용 경로 | 앱 코드 |
+  |---|---|---|
+  | nginx 정적(앱 프로세스 없음) | `/` | 추가 없음 — 증명할 앱 프로세스가 없다 |
+  | Express / NestJS / 일반 Node | `/api/health` | 라우트 한 줄 |
+  | FastAPI / Flask | `/health` | 라우트 한 줄 |
+  | Django | `/health/`(끝 슬래시 — `APPEND_SLASH` 관례) | `urls.py` 한 줄 + 뷰 한 줄 |
+  | Next.js | `/api/health`(route handler) | 파일 1개 |
+  | Streamlit | `/_stcore/health` | 내장 |
+  | Spring Boot | `/actuator/health` | Actuator 의존성 |
+  | 하이브리드(정적+API 한 컨테이너) | 앱 프로세스 쪽 `/api/health` | 라우트 한 줄 |
+
+  **앱 프로세스가 있으면 그 프로세스가 처리하는 경로를 쓴다** — nginx 가 정적 파일만 돌려주는 경로를 쓰면 뒤의 앱이 죽어도 200 이 나와 놓친다. 반대로 **정적 사이트에 `/api/health` 를 강제하지 말 것** — nginx conf 에 `location /api/health { return 200; }` 를 넣으면 custom conf 가 생겨 `nginx:alpine` 의 `10-listen-on-ipv6-by-default.sh` 가 스킵되고 §4 ②-1 의 IPv6 롤백 함정에 새로 걸린다.
+
+  **Dockerfile 부재로 생성 지침(`aiPrompt`)을 쓸 때:** 위 표에서 대상을 **명시**하고, 앱에 그 경로가 없으면 **"Dockerfile 만 만들지 말고 그 엔드포인트를 앱 코드에 함께 추가"** 를 지침에 넣는다. 범위를 Dockerfile 로만 한정하면 기존 API 중에서 고르게 되어 위 실사례가 재발한다(sidiz 는 정확히 이 경로로 발생).
+
+  **② 그 경로가 동작하는가 — 네 조건**
+  - **(a) 항상 200 인가.** 환경변수·빌드 조건에 따라 사라지는 경로면 설정 한 줄에 배포가 깨진다. 프레임워크 내장 문서(FastAPI `/docs`·`/redoc`, Swagger UI)가 대표적 — 운영에서 끄는 게 정석이라 `ENV=production` 순간 404 → unhealthy → 롤백(fursys-sales-dashboard/backend: `docs_url="/docs" if ENV != "production" else None`). **중간**
+  - **(b) 싸게 반환하는가.** 응답 크기가 **데이터 양에 비례하면 안 된다.** DB 접근은 `SELECT 1`·`count(*)`·`LIMIT 1` 수준까지만. **`wget --spider`(본문 미수신)로 바꿔도 해결되지 않는다** — DB→서버 전송은 서버가 쿼리를 실행하는 순간 이미 발생하므로 **경로 자체를 바꿔야** 한다. **중간**
+  - **(c) 연결이 되는가.** 기존 **item R9-5**(바로 위 불릿)를 그대로 적용(`localhost`→`127.0.0.1`). 상세는 §4 ②-1, 탐지는 `../deploy-check/references/deploy-readiness.md` §5-1. **높음** · 자동수정 `type:"healthcheck-ipv4"`
+  - **(d) 점검 명령이 이미지에 있는가. 기준은 `HEALTHCHECK` 이 도는 스테이지 — 멀티스테이지면 마지막 `FROM`** 이다(빌더 alpine + 런타임 nginx/Debian 이 이 룰셋의 정준 골격이라 첫 `FROM` 을 보면 틀린다). alpine(busybox)엔 `wget` 이 있고 `curl` 은 없다 → `wget -q --spider`. **`nginx:*`(alpine 제외)·`*-slim`·`debian:*`·`ubuntu:*` 엔 둘 다 없다** → 설치 줄을 함께 넣거나, Python 이미지면 `python -c "urllib.request.urlopen(...)"` 로 외부 명령 없이 푼다. 반대로 **`node:20`·`python:3.12` 처럼 변종 접미사가 없는 full 이미지는 buildpack-deps 기반이라 둘 다 있다** — 설치 줄을 넣을 필요가 없다. 없는 명령을 쓰면 기동은 정상인데 헬스체크만 ExitCode 1 로 실패해 자동 롤백(iloom-channel-sales-dashboard 실사례 2026-08-24, 해당 Dockerfile 주석에 기록됨). **높음** · 이미지별 판정표는 `../deploy-check/references/deploy-readiness.md` §5-2 (d).
+
+  > **DB 를 볼지 말지:** 컨테이너 헬스체크의 유일한 대응은 **재시작**이다. 재시작으로 고쳐지는 문제(프로세스 행·이벤트 루프 블로킹·메모리 누수)만 감지하는 게 맞고, DB·외부 API 장애는 재시작으로 고쳐지지 않으므로 **기본은 보지 않는다**(k8s liveness 성격). 특히 **프론트를 같은 컨테이너에서 서빙하는 구조**면 DB 장애 시 프론트까지 함께 죽어 폴백 설계가 무력화되므로 넣지 말 것.
+
+  **자동수정:** (c) 는 `type:"healthcheck-ipv4"`(한 줄 치환), (d) 는 `type:"healthcheck-cmd-missing"`(설치 한 줄 — **마지막 `FROM` 스테이지에** 넣어야 한다). **(a)(b) 는 자동수정 대상이 아니다** — 앱 코드에 새 엔드포인트를 추가해야 하므로 `deploy_fixes` 에 담지 말고 경고 + 복붙 프롬프트로만 안내한다.
+  탐지·판정은 `../deploy-check/references/deploy-readiness.md` §5-2.
 - **(Node/npm 계열 공통 — Next.js·NestJS 등) 빌드 단계에서 `NODE_ENV=production` 으로 의존성을 설치하지 않았는지.** 빌드 도구가 `devDependencies` 에 있으면 스킵되어 빌드가 실패한다. `ENV NODE_ENV=production` 은 실행(runner) 스테이지에서만 두고, 설치/빌드 스테이지에는 두지 않는다. (상세·탐지 grep·정준 Dockerfile 골격은 Next.js ②-1/②-2 참조.)
 - **(Node/npm 계열 공통) `RUN npm ci` 를 쓰는데 `package-lock.json` 이 없으면 첫 빌드가 반드시 실패한다.** `npm ci` 는 락파일 필수(없으면 즉시 에러 종료) → **높음(확정 실패, letus-edu 실사례)**. 자동수정 `type:"npm-ci-no-lock"` = `npm ci`→`npm install` **한 줄 치환**(락파일을 새로 만드는 게 아님 — §1 ②-2 정준 골격이 `npm install` 을 쓰는 이유와 동일: Windows 개발 PC 락은 linux-musl 네이티브 의존을 누락해 alpine `npm ci` 가 깨진다). **오탐 가드:** 이미 `npm install` 이거나 `package-lock.json` 이 존재하면 그대로 둔다(락파일이 있으면 `npm ci` 가 재현성에 유리). 탐지 grep 은 `../deploy-check/references/deploy-readiness.md` §1(Dockerfile 내용 함정 점검).
 
@@ -304,6 +336,15 @@ fi
 - 포트: `app.listen(<포트>)` 값과 Dockerfile `EXPOSE`·사내 서버 설정 일치. 포트는 `process.env.PORT` 로 받는 게 안전.
 - 바인딩: `app.listen(PORT, "0.0.0.0")` 로 컨테이너 외부 접속 허용(`localhost`/`127.0.0.1` 바인딩이면 컨테이너 밖에서 못 붙는다).
 - **HEALTHCHECK 는 `127.0.0.1`(IPv4) 로 — §8 공통 규칙(item R9-5) 적용.** `0.0.0.0` 바인딩 + `HEALTHCHECK localhost` 조합은 alpine 에서 `::1`(IPv6) 우선 시도로 롤백을 부른다(자동수정 `type:"healthcheck-ipv4"`).
+- **HEALTHCHECK 전용 경로는 `/api/health`(§8 item67 ①).** 앱에 없으면 라우트 한 줄을 함께 추가한다 — 데이터 목록 API 를 대상으로 쓰지 않는다.
+  ```dockerfile
+  HEALTHCHECK --interval=30s --timeout=3s --start-period=10s --retries=3 \
+    CMD wget -q --spider http://127.0.0.1:3001/api/health || exit 1
+  ```
+  ```js
+  app.get('/api/health', (_req, res) => res.json({ ok: true }));
+  ```
+  DB 연결까지 보려면 `SELECT 1` 까지만. **단 프론트를 같은 컨테이너에서 서빙하는 구조면 넣지 말 것**(§8 item67 ② 박스).
 - `.dockerignore` 에 `node_modules` 필수(§8 item54) — `RUN npm install` 후 `COPY . .` 가 로컬 node_modules 를 덮어 네이티브 바이너리 불일치 크래시.
 - 시작 방법: `CMD ["node","server.js"]`(또는 `npm start`). ts-node 같은 개발 실행기 대신 빌드 산출물(`node dist/…`) 권장.
 - 의존성: `package.json`/lock 이 이미지 빌드에 설치되는지(§1 Next.js ②-1 의 `npm install` vs `npm ci` 주의 동일 적용).
